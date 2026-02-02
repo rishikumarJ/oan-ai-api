@@ -1,17 +1,18 @@
 import uuid
 from helpers.transcription import transcribe_bhashini, detect_audio_language_bhashini
 from helpers.utils import get_logger
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from app.models.requests import TranscribeRequest
 from app.models.responses import TranscribeResponse, ErrorResponse
+from app.auth.jwt_auth import get_current_user
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
 @router.post("/", response_model=TranscribeResponse)
-async def transcribe(request: TranscribeRequest):
+async def transcribe(request: TranscribeRequest, current_user: str = Depends(get_current_user)):
     """Handles language detection and transcription of audio using Bhashini service."""
     
     if not request.audio_content:

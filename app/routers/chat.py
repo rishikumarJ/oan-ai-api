@@ -1,19 +1,20 @@
 from fastapi.responses import StreamingResponse
 import uuid
 import asyncio
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends
 from helpers.utils import get_logger
 from app.utils import get_message_history
 from app.tasks.suggestions import create_suggestions
 from app.services.chat import stream_chat_messages
 from app.models.requests import ChatRequest
+from app.auth.jwt_auth import get_current_user
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("/")
-async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+async def chat(request: ChatRequest, background_tasks: BackgroundTasks, current_user: str = Depends(get_current_user)):
     """Handles chat sessions between a user and the AI assistant."""
     session_id = request.session_id or str(uuid.uuid4())
     

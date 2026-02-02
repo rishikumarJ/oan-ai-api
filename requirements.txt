@@ -36,6 +36,7 @@ aiocache
 # Authentication (FastAPI compatible)
 PyJWT
 cryptography
+bcrypt
 
 # Language and Localization
 langcodes

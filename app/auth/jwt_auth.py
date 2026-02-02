@@ -1,22 +1,20 @@
 import jwt
-import os
-from dotenv import load_dotenv
-from cryptography.hazmat.primitives import serialization
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import Depends, HTTPException, status, Request, WebSocket
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.security.utils import get_authorization_scheme_param
 from helpers.utils import get_logger
-from app.config import settings # Import the application settings
-
-load_dotenv()
+from app.config import settings
 
 logger = get_logger(__name__)
+
+JWT_SECRET_KEY = settings.secret_key
+JWT_ALGORITHM = "HS256"
+
 
 class OptionalOAuth2PasswordBearer(OAuth2PasswordBearer):
     """OAuth2 scheme that's optional in development"""
     async def __call__(self, request: Request) -> str | None:
         if settings.environment == "development":
-            # In development, don't require the token
             authorization = request.headers.get("Authorization")
             if not authorization:
                 return None
@@ -24,81 +22,96 @@ class OptionalOAuth2PasswordBearer(OAuth2PasswordBearer):
             if scheme.lower() != "bearer":
                 return None
             return param
-        # In production, use normal OAuth2 behavior
         return await super().__call__(request)
 
-# OAuth2 scheme for FastAPI - optional in development
-oauth2_scheme = OptionalOAuth2PasswordBearer(tokenUrl="token")
 
-# Construct the absolute path to the public key using settings
-public_key_path = settings.base_dir / settings.jwt_public_key_path
+oauth2_scheme = OptionalOAuth2PasswordBearer(tokenUrl="api/auth/login")
 
-with open(public_key_path, 'rb') as key_file:
-    public_key = serialization.load_pem_public_key(key_file.read())
-logger.info(f"Successfully loaded JWT Public Key from: {public_key_path}")
 
-async def get_current_user(token: str | None = Depends(oauth2_scheme)):
-    """
-    FastAPI dependency to get current authenticated user from JWT token.
-    This replaces the Django middleware approach.
-    Bypasses authentication in development environment.
-    """
-    # Skip authentication in development environment
-    if settings.environment == "development":
-        logger.info("Development environment detected - bypassing authentication")
-        return "development_user"
-    
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    
-    if public_key is None:
-        logger.error("JWT Public Key is not loaded, cannot verify tokens.")
-        raise credentials_exception
-        
+def verify_token(token: str) -> dict:
+    """Verify a JWT token and return the decoded payload."""
     try:
-        decoded_token = jwt.decode(
+        payload = jwt.decode(
             token,
-            public_key,
-            algorithms=[settings.jwt_algorithm],
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
             options={
                 "verify_signature": True,
-                "verify_aud": False,
-                "verify_iss": False
+                "verify_exp": True,
             }
         )
-        
-        logger.info(f"Successfully decoded token for mobile: {decoded_token.get('mobile')}")
-        
-        mobile = decoded_token.get('mobile')
-        if mobile is None:
-            logger.warning("No mobile number found in token")
-#            raise credentials_exception
-            
-        return mobile
-        
+        return payload
     except jwt.ExpiredSignatureError:
-        logger.warning("Token has expired")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
     except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid token error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    except Exception as e:
-        logger.error(f"Unexpected error during token verification: {str(e)}")
+
+
+async def get_current_user(token: str | None = Depends(oauth2_scheme)) -> str:
+    """
+    FastAPI dependency to get current authenticated user from JWT token.
+    Returns the user's email extracted from the token.
+    """
+    if settings.environment == "development" and token is None:
+        logger.info("Development environment detected - bypassing authentication")
+        return "development_user"
+
+    if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token verification failed",
+            detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    payload = verify_token(token)
+    email = payload.get("email") or payload.get("sub")
+    if email is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token: no user identifier found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    logger.info(f"Authenticated user: {email}")
+    return email
+
+
+async def get_current_user_ws(websocket: WebSocket) -> str:
+    """
+    WebSocket dependency to authenticate users via token query parameter.
+    Usage: ws://host/ws?token=<jwt_token>
+    """
+    if settings.environment == "development":
+        logger.info("Development environment detected - bypassing WebSocket authentication")
+        return "development_user"
+
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Missing authentication token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    try:
+        payload = verify_token(token)
+        email = payload.get("email") or payload.get("sub")
+        if email is None:
+            await websocket.close(code=4001, reason="Invalid token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+            )
+        logger.info(f"WebSocket authenticated user: {email}")
+        return email
+    except HTTPException:
+        await websocket.close(code=4001, reason="Authentication failed")
+        raise
