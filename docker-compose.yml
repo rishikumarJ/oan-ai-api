@@ -59,6 +59,7 @@ services:
 
   app:
     build: .
+    platform: linux/arm64
     container_name: oan_app
     depends_on:
       postgres:

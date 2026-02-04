@@ -5,6 +5,7 @@ import numpy as np
 import uuid
 import time
 import re
+import traceback
 from helpers.utils import get_logger
 from helpers.amharic_numerals import replace_numbers_with_amharic_words
 import nltk
@@ -50,16 +51,149 @@ from app.services.router import tool_router, ENABLE_OLLAMA_ROUTER
 from agents.deps import FarmerContext
 from app.utils import sanitize_history_for_generation
 
+from pathlib import Path
+from pathlib import Path
+from helpers.market_place_json import (
+    MARKETPLACES, 
+    LIVESTOCK_MARKETPLACES, 
+    EXACT_MATCH_UP_MARKETPLACES, 
+    EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES
+)
+from agents.tools.Regions import SUPPORTED_REGIONS
+
+COMMODITIES = {
+    "Teff": "ጤፍ",
+    "White Teff": "ነጭ ጤፍ",
+    "Red Teff": "ቀይ ጤፍ",
+    "Mixed Teff": "ሰርገኛ ጤፍ",
+    "Maize": "ቦቆሎ",
+    "Sorghum": "ማሽላ",
+    "Wheat": "ስንዴ",
+    "Barley": "ገብስ",
+    "Coffee": "ቡና",
+    "Sesame": "ሰሊጥ",
+    "Chickpea": "ሽንብራ",
+    "Bean": "ባቄላ",
+    "Lentil": "ምስር"
+}
+
+def get_domain_phrases(lang_code: str = "en-US") -> list[str]:
+    """
+    Dynamically aggregates domain-specific terms based on language:
+    - Amharic Mode: Prioritizes Amharic script terms.
+    - English Mode: Prioritizes English/ASCII terms.
+    - Sources: Marketplaces, Regions, Commodities, Glossary (Limited).
+    """
+    phrases = set()
+
+    # 1. Marketplaces (Names & Regions)
+    # Use EXACT_MATCH keys to get both English ("Arero") and Amharic ("አሬሮ") variations
+    phrases.update(EXACT_MATCH_UP_MARKETPLACES.keys())
+    phrases.update(EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES.keys())
+    
+    # Also add from the standard lists just in case
+    for region, markets in MARKETPLACES.items():
+        phrases.add(region)
+        for m in markets:
+            phrases.add(m["name"])
+    
+    for region, markets in LIVESTOCK_MARKETPLACES.items():
+        phrases.add(region)
+        for m in markets:
+            phrases.add(m["name"])
+
+    # 2. Commodities (Crops) - CRITICAL for preventing "whitefish" vs "white teff" errors
+    phrases.update(COMMODITIES.keys())
+    phrases.update(COMMODITIES.values())
+
+    # 3. Regions (Aliases)
+    for name in SUPPORTED_REGIONS.values():
+        phrases.add(name)
+        
+    # 3. Glossary Terms (Selective/Limited)
+    # NOTE: Disabling full glossary load to prevent exceeding Azure STT Phrase List limit.
+    """
+    try:
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        glossary_path = base_dir / "assets" / "term_glossary.json"
+        
+        if glossary_path.exists():
+            with open(glossary_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for item in data:
+                    if "en" in item:
+                        phrases.add(item["en"])
+    except Exception as e:
+        logger.error(f"❌ Error loading glossary phrases: {e}")
+    """
+
+    # Include ALL phrases (both English and Amharic) - Azure STT needs both for proper biasing
+    # The original working implementation included both "Arero" and "አሬሮ" together
+    # Smart Sorting & Prioritization
+    # Amharic Unicode Range: \u1200 - \u137F
+    
+    amharic_terms = []
+    other_terms = []
+    
+    for p in phrases:
+        if not p or len(p.strip()) < 2:
+            continue
+        p = p.strip()
+        # Check for Amharic char
+        if any('\u1200' <= c <= '\u137F' for c in p):
+            amharic_terms.append(p)
+        else:
+            other_terms.append(p)
+            
+    # Sort buckets alphabetically within themselves for consistency
+    amharic_terms.sort()
+    other_terms.sort()
+    
+    # Merge based on priority
+    if lang_code.lower().startswith("am"):
+        # Amharic Mode: Amharic terms first
+        final_list = amharic_terms + other_terms
+    else:
+        # Default/English: English terms first
+        final_list = other_terms + amharic_terms
+        
+    # Truncation safety
+    if len(final_list) > 1000:
+        logger.warning(f"⚠️ Truncating phrase list from {len(final_list)} to 1000 items (Prioritized {lang_code}).")
+        final_list = final_list[:1000]
+    
+    logger.info(f"📝 Phrase list for {lang_code}: {len(final_list)} total phrases (Amharic: {len(amharic_terms)}, Other: {len(other_terms)})")
+        
+    return final_list
+
+
 class InstrumentedAzureSTTService(AzureSTTService):
     def __init__(self, metrics: dict, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.metrics = metrics
         self._audio_frame_count = 0
-        logger.info(f"🔧 STT initialized (sample_rate={kwargs.get('sample_rate', 16000)})")
+        self._language = kwargs.get('language', 'en-US')
+        logger.info(f"🔧 STT initialized (sample_rate={kwargs.get('sample_rate', 16000)}, lang={self._language})")
         
     async def start(self, frame):
         await super().start(frame)
         if hasattr(self, '_speech_recognizer') and self._speech_recognizer:
+            try:
+                # Inject Domain Phrases directly into the Recognizer
+                import azure.cognitiveservices.speech as speechsdk
+                grammar = speechsdk.PhraseListGrammar.from_recognizer(self._speech_recognizer)
+                
+                # Get prioritized phrases for this language
+                phrases = get_domain_phrases(self._language)
+                
+                for p in phrases:
+                    grammar.addPhrase(p)
+                    
+                logger.info(f"🚀 Injected {len(phrases)} domain phrases into Azure STT for {self._language}")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to inject phrases: {e}")
+
             def on_canceled(evt):
                 logger.warning(f"❌ Azure STT - CANCELED: {evt.result.cancellation_details}")
             self._speech_recognizer.canceled.connect(on_canceled)
@@ -74,6 +208,24 @@ class InstrumentedAzureSTTService(AzureSTTService):
                 self.metrics['asr_start'] = time.perf_counter()
                 
         await super().process_frame(frame, direction)
+        
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, TranscriptionFrame):
+            t = time.perf_counter()
+            self.metrics['asr_end'] = t
+            self.metrics['llm_start'] = t
+            logger.info(f"📝 STT: '{frame.text}'")
+            
+        await super().push_frame(frame, direction)
+        
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, TranscriptionFrame):
+            t = time.perf_counter()
+            self.metrics['asr_end'] = t
+            self.metrics['llm_start'] = t
+            logger.info(f"📝 STT: '{frame.text}'")
+            
+        await super().push_frame(frame, direction)
         
     async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
         if isinstance(frame, TranscriptionFrame):
@@ -321,10 +473,6 @@ class AgriNetLLMService(FrameProcessor):
              return
              
         # 2. Input Audio: SWALLOW IT (Do not send to TTS)
-        if isinstance(frame, InputAudioRawFrame):
-             # Do not push downstream
-             return
-             
         # 2. Text Arrival: Accumulate Buffer
         elif isinstance(frame, TextFrame):
              # CRITICAL: Ignore Interim frames to avoid duplication
@@ -342,12 +490,50 @@ class AgriNetLLMService(FrameProcessor):
                  self._text_buffer = frame.text
              logger.critical(f"📝 AgriNet TEXT BUFF: '{self._text_buffer}'")
              
+             # --- FALLBACK: Text Idle Timer ---
+             # If VAD fails to detect stop (constant background noise), 
+             # we trigger generation if no new text arrives for X seconds.
+             if self._response_task and not self._response_task.done():
+                 # Already generating? Ignore. (Or maybe cancel? No, let it finish)
+                 pass
+             else:
+                 # Cancel existing timer
+                 if hasattr(self, '_text_idle_task') and self._text_idle_task:
+                     self._text_idle_task.cancel()
+                 
+                 # Start new timer (e.g., 2.5s - slightly longer than VAD stop)
+                 async def _idle_trigger():
+                     try:
+                         await asyncio.sleep(2.5) 
+                         logger.warning("⏰ Text Idle Timer Triggered (VAD didn't stop)")
+                         # Simulate Speech Stop
+                         self.metrics['speech_stopped'] = time.perf_counter() 
+                         self._response_task = asyncio.create_task(self._wait_and_generate(direction))
+                     except asyncio.CancelledError:
+                         pass
+                 
+                 self._text_idle_task = asyncio.create_task(_idle_trigger())
+
         # 3. Speech Stop: Wait for latency, then Trigger Generation
         elif isinstance(frame, UserStoppedSpeakingFrame):
+             logger.info("🛑 AgriNet: UserStoppedSpeakingFrame Received")
+             
+             # Cancel fallback timer if it exists
+             if hasattr(self, '_text_idle_task') and self._text_idle_task:
+                 self._text_idle_task.cancel()
+
              self.metrics['speech_stopped'] = time.perf_counter()
              
              # Start background task to wait and generate
              self._response_task = asyncio.create_task(self._wait_and_generate(direction))
+         
+        # 4. Speech Start: Cancel any pending tasks
+        elif isinstance(frame, UserStartedSpeakingFrame):
+             if hasattr(self, '_text_idle_task') and self._text_idle_task:
+                 self._text_idle_task.cancel()
+             await super().process_frame(frame, direction)
+             await self.push_frame(frame, direction)
+             return
 
         # Pass frames through to next processor
         logger.critical(f"⏭️  AgriNet PUSHING Downstream: {type(frame).__name__}")
@@ -359,15 +545,21 @@ class AgriNetLLMService(FrameProcessor):
             # Capture Buffer Wait Time
             self.metrics['buffer_start'] = time.perf_counter()
             
-            # Wait 3.0s for Cloud STT latency (logs show ~2s delay)
-            logger.info("⏳ AgriNet: Waiting 3.0s for final text...")
-            await asyncio.sleep(3.0)
+            # Wait 2.0s for Cloud STT latency (User requested 2.0s)
+            logger.info("⏳ AgriNet: Waiting 2.0s for final text...")
+            await asyncio.sleep(2.0)
             
             self.metrics['buffer_end'] = time.perf_counter()
             
             user_text = self._text_buffer.strip()
+            
+            # --- FILTER: Ignore Empty or Garbage Queries ---
             if not user_text:
-                logger.warning("⚠️ AgriNet: No text received after wait. Ignoring turn.")
+                logger.warning("⚠️ AgriNet: No text received (buffer empty). Ignoring turn.")
+                return
+                
+            if len(user_text) < 4:
+                logger.warning(f"⚠️ AgriNet: Query too short ('{user_text}'). Likely noise/hallucination. Ignoring.")
                 return
 
             # Clear buffer immediately after picking it up to avoid re-processing
@@ -385,43 +577,52 @@ class AgriNetLLMService(FrameProcessor):
             if len(self.history) > 10:
                 self.history = self.history[-10:]
             
-            # Import FastGemini services
-            from app.services.fast_gemini import FastGeminiService, FastModerationService
-            
-            # Run moderation first (if enabled)
-            moderation_service = FastModerationService()
-            is_safe, mod_category, mod_action = await moderation_service.moderate(user_text, self.metrics)
-            
-            if not is_safe:
-                logger.info(f"⛔ Query blocked by moderation: {mod_category}")
-                rejection_msg = "I can only help with agricultural topics."
-                # Send directly via websocket
-                await self._websocket.send_json({
-                    "type": "llm_chunk",
-                    "text": rejection_msg,
-                    "turn_id": str(uuid.uuid4())
-                })
-                # Don't add rejection to history usually, or maybe do.
+            try:
+                # Import safely
+                t_import = time.perf_counter()
+                from app.services.fast_gemini import FastGeminiService
+                from app.utils import format_message_pairs
+                from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
+                logger.debug(f"📚 Imports took {(time.perf_counter() - t_import)*1000:.2f}ms")
+                
+                # Initialize Service
+                logger.info(f"🚀 Initializing FastGeminiService (lang={self.context.lang_code})...")
+                fast_service = FastGeminiService(lang=self.context.lang_code)
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize FastGeminiService: {e}")
+                traceback.print_exc()
+                # Send fallback immediately
+                await self.push_frame(TextFrame(text="Sorry, I encountered an error starting the brain."))
                 return
-            
-            # Generate
-            model_name = os.getenv("LLM_MODEL_NAME", "gemini-2.0-flash-exp")
-            logger.info(f"🧠 Using LLM Model: {model_name}")
-            fast_service = FastGeminiService(model=model_name, lang=self.context.lang_code)
+
             ai_full_text = ""
             
-            # Construct Prompt with History
-            full_prompt = ""
-            if len(self.history) > 1: # Has previous messages
-                history_str = "Conversation History:\n"
-                for msg in self.history[:-1]: # Exclude current query which is last
-                    role = "User" if msg["role"] == "user" else "Assistant"
-                    history_str += f"{role}: {msg['content']}\n"
-                full_prompt = f"{history_str}\nCurrent User Query: {user_text}"
-                logger.info(f"📜 Added history context ({len(self.history)-1} msgs)")
-            else:
-                full_prompt = user_text
+            # Construct Prompt with History using Unified Format
+            model_history = []
+            # Exclude current query (last item) for history context block
+            previous_turns = self.history[:-1] 
             
+            try:
+                for msg in previous_turns:
+                    if msg["role"] == "user":
+                        model_history.append(ModelRequest(parts=[UserPromptPart(content=msg["content"])]))
+                    else:
+                        model_history.append(ModelResponse(parts=[TextPart(content=msg["content"])]))
+    
+                # Use shared formatter (same as Text Pipeline)
+                message_pairs_str = "\n\n".join(format_message_pairs(model_history, 3))
+                
+                full_prompt = ""
+                if message_pairs_str:
+                    full_prompt = f"**Conversation**\n\n{message_pairs_str}\n\n---\n\n{user_text}"
+                else:
+                    full_prompt = user_text
+                    
+                logger.info(f"📜 Added history context ({len(previous_turns)} msgs) | Prompt length: {len(full_prompt)}")
+            except Exception as e:
+                logger.error(f"❌ Error constructing history: {e}")
+                full_prompt = user_text # Fallback to just current query
+
             # CRITICAL: Force TTS Reset for Multi-Turn Stability
             # Send an EndFrame to flush any previous state in the TTS service
             # This ensures it's ready for the new turn.
@@ -703,11 +904,12 @@ async def run_pipecat_pipeline(websocket: WebSocket, session_id: str, lang: str 
     from pipecat.audio.vad.vad_analyzer import VADParams
 
     # Settings optimized for 128ms packets (buffer=2048)
+    # CLEAN INPUT MODE - Relies on DeepFilterNet/RNNoise to remove noise first
     vad_analyzer = SileroVADAnalyzer(params=VADParams(
-        start_secs=0.15,      # Start detection after 150ms of speech
-        stop_secs=0.8,        # Snappy VAD - Latency handled by Service
-        confidence=0.4,       
-        min_volume=0.01       
+        start_secs=0.1,       # Fast pickup (100ms) - Catches first syllables ("Hello")
+        stop_secs=0.8,        # Standard release (800ms) - Natural pauses
+        confidence=0.6,       # Standard confidence (0.6) - Reliable for clean audio
+        min_volume=0.1        # Low volume threshold (10%) - Captures soft speech (DeepFilter handles the noise)
     ))
 
     # 0. Wrap WebSocket with Lock to prevent concurrent write errors
@@ -750,23 +952,44 @@ async def run_pipecat_pipeline(websocket: WebSocket, session_id: str, lang: str 
 
     locked_ws = LockedWebSocket(websocket)
 
-    # Initialize RNNoise Filter
-    rnnoise_filter = None
-    try:
-        from pipecat.audio.filters.rnnoise_filter import RNNoiseFilter
-        rnnoise_filter = RNNoiseFilter()
-        logger.info("✅ RNNoise Filter initialized successfully")
-    except ImportError:
-        logger.warning("⚠️ RNNoise module not found. Noise cancellation disabled.")
-    except Exception as e:
-        logger.error(f"❌ RNNoise initialization failed: {e}")
+    # Initialize Noise Filter (Priority: DeepFilterNet > RNNoise)
+    audio_filter = None
+    use_deepfilter = os.getenv("ENABLE_DEEPFILTER", "false").lower() == "true"
+    use_rnnoise = os.getenv("ENABLE_RNNOISE", "true").lower() == "true"
+    
+    if use_deepfilter:
+        try:
+            from app.services.filters.deepfilternet_filter import DeepFilterNetFilter
+            # post_filter=True applies aggressive suppression
+            audio_filter = DeepFilterNetFilter(post_filter=True)
+            logger.info("✅ DeepFilterNet3 Filter initialized (Priority)")
+        except Exception as e:
+            logger.error(f"❌ DeepFilterNet initialization failed: {e}")
+            logger.info("🔄 Falling back to RNNoise configuration...")
+            # Fall through to RNNoise check below if we want fallback, 
+            # OR just let it proceed to next block. 
+            # Currently strict logic: if DF fails, we try RNNoise if enabled?
+            # Let's rely on user config. If DF fails, we check RNNoise flag.
+            
+    if not audio_filter and use_rnnoise:
+        try:
+            from pipecat.audio.filters.rnnoise_filter import RNNoiseFilter
+            audio_filter = RNNoiseFilter(resampler_quality="HQ")
+            logger.info("✅ RNNoise Filter initialized (HQ Mode)")
+        except ImportError:
+            logger.warning("⚠️ RNNoise module not found. Noise cancellation disabled.")
+        except Exception as e:
+            logger.error(f"❌ RNNoise initialization failed: {e}")
+            
+    if not audio_filter:
+        logger.info("ℹ️ Noise Filtering DISABLED")
 
     transport = RawFastAPIWebsocketTransport(
         websocket=locked_ws,
         params=TransportParams(
             audio_out_enabled=True,
             audio_in_enabled=True,
-            audio_in_filter=rnnoise_filter,
+            audio_in_filter=audio_filter,
             vad_analyzer=vad_analyzer
         )
     )

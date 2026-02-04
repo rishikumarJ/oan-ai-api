@@ -3,7 +3,7 @@ import json
 import time
 import os
 from agents.agrinet import agrinet_agent
-from app.services.moderation_classifier import moderation_classifier
+
 from helpers.utils import get_logger
 from app.utils import (
     update_message_history,
@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from agents.deps import FarmerContext
 from helpers.utils import get_logger, get_prompt, get_today_date_str
 from pydantic_ai import UsageLimits
-from app.services.fast_gemini import FastGeminiService, FastModerationService
+from app.services.fast_gemini import FastGeminiService
 load_dotenv()
 
 logger = get_logger(__name__)
@@ -52,39 +52,9 @@ async def stream_chat_messages(
     stage_time = (time.perf_counter() - stage_start) * 1000
     logger.info(f"⏱️ [TIMING] Context preparation: {stage_time:.2f}ms")
     
-    # ⏱️ STAGE 2: Pre-Moderation (User Input)
-    enable_moderation = os.getenv("ENABLE_MODERATION", "false").lower() == "true"
-    moderation_time = 0
-    if enable_moderation:
-        stage_start = time.perf_counter()
-        try:
-            pre_mod_result = moderation_classifier.classify(query, lang=target_lang)
-            moderation_time = (time.perf_counter() - stage_start) * 1000
-            logger.info(f"⏱️ [TIMING] Pre-moderation (Classifier): {moderation_time:.2f}ms - {pre_mod_result.reason}")
-            
-            if not pre_mod_result.is_safe:
-                logger.warning(f"User input blocked: {pre_mod_result.label} - {pre_mod_result.reason}")
-                response_data = {
-                    "response": "I'm sorry, but I cannot process this request as it contains potentially harmful content.",
-                    "status": "blocked",
-                    "moderation": {
-                        "stage": "pre",
-                        "label": pre_mod_result.label,
-                        "reason": pre_mod_result.reason
-                    }
-                }
-                yield json.dumps(response_data)
-                return
-            
-            # Allow through if safe
-            deps.update_moderation_str(json.dumps({"stage": "pre", "label": "safe"}))
-
-        except Exception as e:
-            logger.error(f"Pre-moderation failed: {e}. Continuing (fail-open).")
-            moderation_time = (time.perf_counter() - stage_start) * 1000
-            logger.info(f"⏱️ [TIMING] Pre-moderation (failed): {moderation_time:.2f}ms")
-    else:
-        logger.info(f"⏱️ [TIMING] Pre-moderation: DISABLED (0ms)")
+    # ⏱️ STAGE 2: Pre-Moderation (Native Gemini Safety Settings)
+    # Replaced external classifier with native Gemini safety_settings in FastGeminiService
+    logger.info(f"⏱️ [TIMING] Pre-moderation: Handled natively by Gemini")
 
     # ⏱️ STAGE 3: History trimming
     stage_start = time.perf_counter()
@@ -168,6 +138,10 @@ async def stream_chat_messages(
         # Calculate Tool Metrics
         tool_count = 0
         total_tool_time = 0
+        
+        # Define missing variables (Moderation removed)
+        enable_moderation = False
+        moderation_time = 0.0
         
         # Pull from deps.timings which is populated by @log_execution_time
         if hasattr(deps, 'timings'):
