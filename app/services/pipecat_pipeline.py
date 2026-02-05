@@ -74,7 +74,9 @@ COMMODITIES = {
     "Sesame": "ሰሊጥ",
     "Chickpea": "ሽንብራ",
     "Bean": "ባቄላ",
-    "Lentil": "ምስር"
+    "Lentil": "ምስር",
+    "Bull": "በሬ",
+    "Ox": "በሬ"
 }
 
 def get_domain_phrases(lang_code: str = "en-US") -> list[str]:
@@ -86,21 +88,60 @@ def get_domain_phrases(lang_code: str = "en-US") -> list[str]:
     """
     phrases = set()
 
-    # 1. Marketplaces (Names & Regions)
-    # Use EXACT_MATCH keys to get both English ("Arero") and Amharic ("አሬሮ") variations
-    phrases.update(EXACT_MATCH_UP_MARKETPLACES.keys())
-    phrases.update(EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES.keys())
+    # 1. Marketplaces (Names & Regions) + Contextual Variations
+    # "Arero" might be misheard as "Radio", but "Arero Market" or "Arero Gebeya" is unique.
+    # We generate these combinations to boost STT accuracy for short names.
     
-    # Also add from the standard lists just in case
+    all_markets = set()
+    all_markets.update(EXACT_MATCH_UP_MARKETPLACES.keys())
+    all_markets.update(EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES.keys())
+    
+    # Define Region Mapping for Contextual Biasing
+    region_map = {
+        "Oromia": "ኦሮሚያ",
+        "Amhara": "አማራ",
+        "Tigray": "ትግራይ",
+        "SNNP": "ደቡብ",
+        "Somali": "ሱማሌ",
+        "Afar": "አፋር",
+        "Sidama": "ሲዳማ",
+        "South West": "ደቡብ ምዕራብ"
+    }
+
+    # Also add from the standard lists with Region context
     for region, markets in MARKETPLACES.items():
         phrases.add(region)
-        for m in markets:
-            phrases.add(m["name"])
+        region_am = region_map.get(region, region)
+        phrases.add(region_am)
+        
+        for m in markets: 
+            name = m["name"]
+            all_markets.add(name)
+            # Add "Region Name" combo (e.g. "Oromia Arero")
+            phrases.add(f"{region} {name}")
+            phrases.add(f"{region_am} {name}")
     
     for region, markets in LIVESTOCK_MARKETPLACES.items():
         phrases.add(region)
-        for m in markets:
-            phrases.add(m["name"])
+        region_am = region_map.get(region, region)
+        phrases.add(region_am)
+        
+        for m in markets: 
+            name = m["name"]
+            all_markets.add(name)
+            # Add "Region Name" combo
+            phrases.add(f"{region} {name}")
+            phrases.add(f"{region_am} {name}")
+            
+    # Add raw names AND suffixes
+    for name in all_markets:
+        phrases.add(name)
+        # Add suffixes for context
+        if any('\u1200' <= c <= '\u137F' for c in name): # Amharic check
+            phrases.add(f"{name} ገበያ") # Name Gebeya
+        else:
+            phrases.add(f"{name} Market")
+            phrases.add(f"{name} Gebeya") # Even in English mode, local term helps
 
     # 2. Commodities (Crops) - CRITICAL for preventing "whitefish" vs "white teff" errors
     phrases.update(COMMODITIES.keys())
@@ -217,24 +258,6 @@ class InstrumentedAzureSTTService(AzureSTTService):
             logger.info(f"📝 STT: '{frame.text}'")
             
         await super().push_frame(frame, direction)
-        
-    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
-        if isinstance(frame, TranscriptionFrame):
-            t = time.perf_counter()
-            self.metrics['asr_end'] = t
-            self.metrics['llm_start'] = t
-            logger.info(f"📝 STT: '{frame.text}'")
-            
-        await super().push_frame(frame, direction)
-        
-    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
-        if isinstance(frame, TranscriptionFrame):
-            t = time.perf_counter()
-            self.metrics['asr_end'] = t
-            self.metrics['llm_start'] = t
-            logger.info(f"📝 STT: '{frame.text}'")
-            
-        await super().push_frame(frame, direction)
 
 class InstrumentedAzureTTSService(AzureTTSService):
     def __init__(self, metrics: dict, *args, **kwargs):
@@ -291,15 +314,17 @@ class InstrumentedAzureTTSService(AzureTTSService):
         # ═══════════════════════════════════════════════════════
         
         # 1. ASR/STT Time 
-        # Latency: processing time after speech stopped
+        # Latency: processing time after speech stopped (can be negative if STT is faster than VAD)
         stt_latency = 0
         if m.get('asr_end') and m.get('speech_stopped'):
-            stt_latency = (m['asr_end'] - m['speech_stopped'])*1000
+            stt_latency = max(0, (m['asr_end'] - m['speech_stopped'])*1000)
             
         # Duration: Total time from first audio packet to text ready
+        # Use speech_started as fallback if asr_start wasn't set
         stt_duration = 0
-        if m.get('asr_end') and m.get('asr_start'):
-            stt_duration = (m['asr_end'] - m['asr_start'])*1000
+        asr_start = m.get('asr_start') or m.get('speech_started')
+        if m.get('asr_end') and asr_start:
+            stt_duration = (m['asr_end'] - asr_start)*1000
         
         # 2. Buffer Wait (Intentional Delay)
         buffer_wait = 0
@@ -344,10 +369,11 @@ class InstrumentedAzureTTSService(AzureTTSService):
         if m.get('llm_end') and m.get('llm_start'):
             llm_inference_total = (m['llm_end'] - m['llm_start'])*1000
             
-        # Calculate Intermediate Thinking (Gaps between tools)
-        # Total = Select + Exec + Gen + Intermediate
-        intermediate_think = llm_inference_total - llm_select - tool_total - response_gen
-        if intermediate_think < 0: intermediate_think = 0
+        # Calculate Unaccounted Time (Network latency, model loading, token parsing gaps)
+        # This is the 'overhead' not attributed to specific stages
+        # Formula: Total - (Selection + Execution + ResponseGen)
+        unaccounted_time = llm_inference_total - llm_select - tool_total - response_gen
+        if unaccounted_time < 0: unaccounted_time = 0
 
         # 9. TTS Synthesis (Time to produce first audio chunk)
         tts_time = 0
@@ -389,7 +415,7 @@ class InstrumentedAzureTTSService(AzureTTSService):
             f"   ⚡ LLM Inference Total:   {llm_inference_total:>8.2f} ms",
             f"      🧠 Initial Thought:    {llm_select:>8.2f} ms",
             f"      🛠️  Tool Execution:     {tool_total:>8.2f} ms ({tool_count} calls)",
-            f"      🤔 Multi-turn Think:   {intermediate_think:>8.2f} ms",
+            f"      ⏳ Overhead/Gaps:       {unaccounted_time:>8.2f} ms",
             f"      💬 Final Response Gen: {response_gen:>8.2f} ms",
             f"",
             f"   🔊 TTS Synthesis:         {tts_time:>8.2f} ms",
@@ -458,15 +484,18 @@ class AgriNetLLMService(FrameProcessor):
                      logger.info("🛑 Previous Response Task Cancelled (Interruption)")
                  except Exception: pass
 
-             # Preserve asr_start if it was already set by STT (which sees audio before VAD triggers)
+             # RESET metrics for new turn, BUT preserve asr_start
+             # WHY PRESERVE? Audio packets arrive BEFORE VAD triggers UserStartedSpeaking.
+             # STT sets asr_start on first audio. If we clear it here, we lose it.
+             # WHY IS THIS SAFE? After each turn, log_metrics() clears the dict,
+             # so stale asr_start from previous turns won't persist.
              asr_start_backup = self.metrics.get('asr_start')
-             
-             self.metrics.clear() # Reset metrics for new turn
-             
+             self.metrics.clear()
+             self.metrics['timings'] = []
              if asr_start_backup:
                  self.metrics['asr_start'] = asr_start_backup
-                 
              self.metrics['speech_started'] = time.perf_counter()
+                 
              logger.critical("🎤 SPEECH DETECTED - PROPAGATING (Verification Mode)")
              await super().process_frame(frame, direction)
              await self.push_frame(frame, direction)

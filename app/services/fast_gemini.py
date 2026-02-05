@@ -24,9 +24,10 @@ class FastGeminiService:
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.model = model or os.getenv("LLM_MODEL_NAME", "gemini-3-flash-preview")
         self.lang = lang
-        self.system_prompt = get_prompt(lang, context={'today_date': get_today_date_str(lang)})
         
         # Configure tools exactly as AI Studio exports
+        self.system_prompt = get_prompt(lang, context={'today_date': get_today_date_str(lang)})
+        
         self.tools = [
             types.Tool(
                 function_declarations=[
@@ -383,6 +384,19 @@ class FastGeminiService:
                 self.deps = FarmerContext(query="", lang_code=lang)
         
         ctx = MockRunContext(self.lang)
+        
+        # --- ROBUST ARGUMENT NORMALIZATION ---
+        # Handle common model hallucinations like double underscores (marketplace__name)
+        normalized_args = {}
+        for k, v in args.items():
+            # Fix double underscores (Django style hallucination)
+            clean_k = k.replace('__', '_')
+            normalized_args[clean_k] = v
+            # Also keep original just in case
+            if k not in normalized_args:
+                normalized_args[k] = v
+        args = normalized_args
+        # -------------------------------------
         
         try:
             if tool_name == "get_crop_price_quick":
