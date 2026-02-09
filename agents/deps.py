@@ -1,6 +1,5 @@
 from typing import Optional
 from pydantic import BaseModel, Field
-from langcodes import Language
 
 
 class FarmerContext(BaseModel):
@@ -16,8 +15,19 @@ class FarmerContext(BaseModel):
 
     def _language_string(self):
         """Get the language string for the agrinet agent."""
+        # Static map to avoid slow langcodes library lookup
+        LANG_MAP = {
+            'en': 'English',
+            'am': 'Amharic', 
+            'om': 'Oromiffa',
+            'ti': 'Tigrinya',
+            'so': 'Somali',
+            'aa': 'Afar'
+        }
+        
         if self.lang_code:
-            return f"**Selected Language:** {Language.get(self.lang_code).display_name()}"
+            lang_name = LANG_MAP.get(self.lang_code, self.lang_code)
+            return f"**Selected Language:** {lang_name}"
         else:
             return None
     

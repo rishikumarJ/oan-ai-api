@@ -165,7 +165,7 @@ def get_domain_phrases(lang_code: str = "en-US") -> list[str]:
                     if "en" in item:
                         phrases.add(item["en"])
     except Exception as e:
-        logger.error(f"❌ Error loading glossary phrases: {e}")
+        logger.error(f"[ERROR] Error loading glossary phrases: {e}")
     """
 
     # Include ALL phrases (both English and Amharic) - Azure STT needs both for proper biasing
@@ -200,10 +200,10 @@ def get_domain_phrases(lang_code: str = "en-US") -> list[str]:
         
     # Truncation safety
     if len(final_list) > 1000:
-        logger.warning(f"⚠️ Truncating phrase list from {len(final_list)} to 1000 items (Prioritized {lang_code}).")
+        logger.warning(f"[WARN] Truncating phrase list from {len(final_list)} to 1000 items (Prioritized {lang_code}).")
         final_list = final_list[:1000]
     
-    logger.info(f"📝 Phrase list for {lang_code}: {len(final_list)} total phrases (Amharic: {len(amharic_terms)}, Other: {len(other_terms)})")
+    logger.info(f"[INFO] Phrase list for {lang_code}: {len(final_list)} total phrases (Amharic: {len(amharic_terms)}, Other: {len(other_terms)})")
         
     return final_list
 
@@ -214,7 +214,7 @@ class InstrumentedAzureSTTService(AzureSTTService):
         self.metrics = metrics
         self._audio_frame_count = 0
         self._language = kwargs.get('language', 'en-US')
-        logger.info(f"🔧 STT initialized (sample_rate={kwargs.get('sample_rate', 16000)}, lang={self._language})")
+        logger.info(f"[SETUP] STT initialized (sample_rate={kwargs.get('sample_rate', 16000)}, lang={self._language})")
         
     async def start(self, frame):
         await super().start(frame)
@@ -230,16 +230,16 @@ class InstrumentedAzureSTTService(AzureSTTService):
                 for p in phrases:
                     grammar.addPhrase(p)
                     
-                logger.info(f"🚀 Injected {len(phrases)} domain phrases into Azure STT for {self._language}")
+                logger.info(f"[START] Injected {len(phrases)} domain phrases into Azure STT for {self._language}")
                 
             except Exception as e:
-                logger.error(f"❌ Failed to inject phrases: {e}")
+                logger.error(f"[ERROR] Failed to inject phrases: {e}")
 
             def on_canceled(evt):
-                logger.warning(f"❌ Azure STT - CANCELED: {evt.result.cancellation_details}")
+                logger.warning(f"[ERROR] Azure STT - CANCELED: {evt.result.cancellation_details}")
             self._speech_recognizer.canceled.connect(on_canceled)
         else:
-            logger.warning("⚠️ STT: Speech recognizer not created!")
+            logger.warning("[WARN] STT: Speech recognizer not created!")
         
     async def process_frame(self, frame, direction):
         if isinstance(frame, InputAudioRawFrame):
@@ -255,7 +255,7 @@ class InstrumentedAzureSTTService(AzureSTTService):
             t = time.perf_counter()
             self.metrics['asr_end'] = t
             self.metrics['llm_start'] = t
-            logger.info(f"📝 STT: '{frame.text}'")
+            logger.info(f"[INFO] STT: '{frame.text}'")
             
         await super().push_frame(frame, direction)
 
@@ -274,13 +274,13 @@ class InstrumentedAzureTTSService(AzureTTSService):
             if 'tts_start' not in self.metrics:
                 self.metrics['tts_start'] = time.perf_counter()
                 text_preview = getattr(frame, 'text', 'NoText')[:30]
-                logger.info(f"🐛 TTS START: '{text_preview}' at {self.metrics['tts_start']}")
+                logger.info(f"[DEBUG] TTS START: '{text_preview}' at {self.metrics['tts_start']}")
         
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMFullResponseEndFrame):
              self.metrics['tts_end'] = time.perf_counter()
-             logger.info(f"🔊 TTS: Complete ({self._audio_frame_count} audio frames)")
+             logger.info(f"[TTS] TTS: Complete ({self._audio_frame_count} audio frames)")
              self._audio_frame_count = 0
              
              # Calculate and log metrics, and get the dict to send to client
@@ -299,10 +299,10 @@ class InstrumentedAzureTTSService(AzureTTSService):
             if 'tts_first_audio' not in self.metrics:
                 now = time.perf_counter()
                 self.metrics['tts_first_audio'] = now
-                logger.info(f"🔊 TTS: First audio frame produced ({len(frame.audio)} bytes) at {now}")
+                logger.info(f"[TTS] TTS: First audio frame produced ({len(frame.audio)} bytes) at {now}")
                 if 'tts_start' in self.metrics:
                     delta = (now - self.metrics['tts_start']) * 1000
-                    logger.info(f"🐛 TTS Latency Debug: {delta:.2f}ms")
+                    logger.info(f"[DEBUG] TTS Latency Debug: {delta:.2f}ms")
         
         await super().push_frame(frame, direction)
 
@@ -399,32 +399,32 @@ class InstrumentedAzureTTSService(AzureTTSService):
         mod_display = f"{mod_time:>8.2f} ms" if mod_status == 'Enabled' else f"N/A [{mod_status}]"
 
         log_lines = [
-            f"\n{'═'*60}",
-            f"📊 PERFORMANCE METRICS BREAKDOWN",
-            f"{'═'*60}",
-            f"🔹 Query: {query_preview}",
-            f"{'─'*60}",
+            f"\n{'='*60}",
+            f"[METRICS] PERFORMANCE METRICS BREAKDOWN",
+            f"{'='*60}",
+            f"[QUERY] Query: {query_preview}",
+            f"{'-'*60}",
             f"",
-            f"📍 STAGE TIMINGS:",
-            f"   🎤 STT Duration:          {stt_duration:>8.2f} ms (Processing: {stt_latency:.2f} ms)",
+            f"[TIMING] STAGE TIMINGS:",
+            f"   [MIC] STT Duration:          {stt_duration:>8.2f} ms (Processing: {stt_latency:.2f} ms)",
             f"",
-            f"   ⏳ Pipeline Overhead:",
-            f"      🛑 Buffer Wait:        {buffer_wait:>8.2f} ms",
-            f"      ⚖️  Moderation:         {mod_display}",
+            f"   [WAIT] Pipeline Overhead:",
+            f"      [STOP] Buffer Wait:        {buffer_wait:>8.2f} ms",
+            f"      [MOD]  Moderation:         {mod_display}",
             f"",
-            f"   ⚡ LLM Inference Total:   {llm_inference_total:>8.2f} ms",
-            f"      🧠 Initial Thought:    {llm_select:>8.2f} ms",
-            f"      🛠️  Tool Execution:     {tool_total:>8.2f} ms ({tool_count} calls)",
-            f"      ⏳ Overhead/Gaps:       {unaccounted_time:>8.2f} ms",
-            f"      💬 Final Response Gen: {response_gen:>8.2f} ms",
+            f"   [LLM] LLM Inference Total:   {llm_inference_total:>8.2f} ms",
+            f"      [THINK] Initial Thought:    {llm_select:>8.2f} ms",
+            f"      [TOOL]  Tool Execution:     {tool_total:>8.2f} ms ({tool_count} calls)",
+            f"      [WAIT] Overhead/Gaps:       {unaccounted_time:>8.2f} ms",
+            f"      [TEXT] Final Response Gen: {response_gen:>8.2f} ms",
             f"",
-            f"   🔊 TTS Synthesis:         {tts_time:>8.2f} ms",
+            f"   [TTS] TTS Synthesis:         {tts_time:>8.2f} ms",
             f"",
-            f"{'─'*60}",
-            f"📊 AGGREGATE METRICS:",
-            f"   ⏱️  User Percieved Latency:{e2e_latency:>8.2f} ms (Speech Stop → Audio Start)",
-            f"   🔴 Total Pipeline Time:   {full_pipeline:>8.2f} ms",
-            f"{'═'*60}"
+            f"{'-'*60}",
+            f"[METRICS] AGGREGATE METRICS:",
+            f"   [TIMING] User Percieved Latency:{e2e_latency:>8.2f} ms (Speech Stop -> Audio Start)",
+            f"   [TOTAL] Total Pipeline Time:   {full_pipeline:>8.2f} ms",
+            f"{'='*60}"
         ]
         logger.info("\n".join(log_lines))
         
@@ -456,7 +456,7 @@ class AgriNetLLMService(FrameProcessor):
     
     def __init__(self, context: FarmerContext, metrics: dict, websocket: WebSocket):
         super().__init__()
-        logger.info("🟢 AgriNetLLMService INITIALIZED")
+        logger.info("[INIT] AgriNetLLMService INITIALIZED")
         self.context = context
         self.metrics = metrics
         self.history = [] 
@@ -467,21 +467,21 @@ class AgriNetLLMService(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # Handle control frames - call super AND push to next processor
         if isinstance(frame, (StartFrame, EndFrame, CancelFrame)):
-            logger.critical(f"🎭 AgriNet PROPAGATING Control Frame: {type(frame).__name__}")
+            logger.critical(f"[CTRL] AgriNet PROPAGATING Control Frame: {type(frame).__name__}")
             await super().process_frame(frame, direction)
             await self.push_frame(frame, direction)
             return
             
         # DEBUG: Log non-audio frames
         if not isinstance(frame, (InputAudioRawFrame, TTSAudioRawFrame)):
-            logger.critical(f"🎭 AgriNet RECEIVED: {type(frame).__name__}")
+            logger.critical(f"[CTRL] AgriNet RECEIVED: {type(frame).__name__}")
         
         # 1. Speech Start: Propagate it! (Verification)
         if isinstance(frame, UserStartedSpeakingFrame):
              if self._response_task and not self._response_task.done():
                  try:
                      self._response_task.cancel()
-                     logger.info("🛑 Previous Response Task Cancelled (Interruption)")
+                     logger.info("[STOP] Previous Response Task Cancelled (Interruption)")
                  except Exception: pass
 
              # RESET metrics for new turn, BUT preserve asr_start
@@ -496,7 +496,7 @@ class AgriNetLLMService(FrameProcessor):
                  self.metrics['asr_start'] = asr_start_backup
              self.metrics['speech_started'] = time.perf_counter()
                  
-             logger.critical("🎤 SPEECH DETECTED - PROPAGATING (Verification Mode)")
+             logger.critical("[MIC] SPEECH DETECTED - PROPAGATING (Verification Mode)")
              await super().process_frame(frame, direction)
              await self.push_frame(frame, direction)
              return
@@ -517,7 +517,7 @@ class AgriNetLLMService(FrameProcessor):
                  self._text_buffer += " " + frame.text
              else:
                  self._text_buffer = frame.text
-             logger.critical(f"📝 AgriNet TEXT BUFF: '{self._text_buffer}'")
+             logger.critical(f"[INFO] AgriNet TEXT BUFF: '{self._text_buffer}'")
              
              # --- FALLBACK: Text Idle Timer ---
              # If VAD fails to detect stop (constant background noise), 
@@ -534,7 +534,7 @@ class AgriNetLLMService(FrameProcessor):
                  async def _idle_trigger():
                      try:
                          await asyncio.sleep(2.5) 
-                         logger.warning("⏰ Text Idle Timer Triggered (VAD didn't stop)")
+                         logger.warning("[TIMER] Text Idle Timer Triggered (VAD didn't stop)")
                          # Simulate Speech Stop
                          self.metrics['speech_stopped'] = time.perf_counter() 
                          self._response_task = asyncio.create_task(self._wait_and_generate(direction))
@@ -545,7 +545,7 @@ class AgriNetLLMService(FrameProcessor):
 
         # 3. Speech Stop: Wait for latency, then Trigger Generation
         elif isinstance(frame, UserStoppedSpeakingFrame):
-             logger.info("🛑 AgriNet: UserStoppedSpeakingFrame Received")
+             logger.info("[STOP] AgriNet: UserStoppedSpeakingFrame Received")
              
              # Cancel fallback timer if it exists
              if hasattr(self, '_text_idle_task') and self._text_idle_task:
@@ -565,7 +565,7 @@ class AgriNetLLMService(FrameProcessor):
              return
 
         # Pass frames through to next processor
-        logger.critical(f"⏭️  AgriNet PUSHING Downstream: {type(frame).__name__}")
+        logger.critical(f"[NEXT]  AgriNet PUSHING Downstream: {type(frame).__name__}")
         await self.push_frame(frame, direction)
 
     async def _wait_and_generate(self, direction):
@@ -575,7 +575,7 @@ class AgriNetLLMService(FrameProcessor):
             self.metrics['buffer_start'] = time.perf_counter()
             
             # Wait 2.0s for Cloud STT latency (User requested 2.0s)
-            logger.info("⏳ AgriNet: Waiting 2.0s for final text...")
+            logger.info("[WAIT] AgriNet: Waiting 2.0s for final text...")
             await asyncio.sleep(2.0)
             
             self.metrics['buffer_end'] = time.perf_counter()
@@ -584,17 +584,17 @@ class AgriNetLLMService(FrameProcessor):
             
             # --- FILTER: Ignore Empty or Garbage Queries ---
             if not user_text:
-                logger.warning("⚠️ AgriNet: No text received (buffer empty). Ignoring turn.")
+                logger.warning("[WARN] AgriNet: No text received (buffer empty). Ignoring turn.")
                 return
                 
             if len(user_text) < 4:
-                logger.warning(f"⚠️ AgriNet: Query too short ('{user_text}'). Likely noise/hallucination. Ignoring.")
+                logger.warning(f"[WARN] AgriNet: Query too short ('{user_text}'). Likely noise/hallucination. Ignoring.")
                 return
 
             # Clear buffer immediately after picking it up to avoid re-processing
             self._text_buffer = ""
 
-            logger.info(f"🚀 AgriNet: Proceeding with query: '{user_text}'")
+            logger.info(f"[START] AgriNet: Proceeding with query: '{user_text}'")
             
             # --- GENERATION LOGIC ---
             self.context.query = user_text
@@ -612,13 +612,13 @@ class AgriNetLLMService(FrameProcessor):
                 from app.services.fast_gemini import FastGeminiService
                 from app.utils import format_message_pairs
                 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
-                logger.debug(f"📚 Imports took {(time.perf_counter() - t_import)*1000:.2f}ms")
+                logger.debug(f"[LOAD] Imports took {(time.perf_counter() - t_import)*1000:.2f}ms")
                 
                 # Initialize Service
-                logger.info(f"🚀 Initializing FastGeminiService (lang={self.context.lang_code})...")
+                logger.info(f"[START] Initializing FastGeminiService (lang={self.context.lang_code})...")
                 fast_service = FastGeminiService(lang=self.context.lang_code)
             except Exception as e:
-                logger.error(f"❌ Failed to initialize FastGeminiService: {e}")
+                logger.error(f"[ERROR] Failed to initialize FastGeminiService: {e}")
                 traceback.print_exc()
                 # Send fallback immediately
                 await self.push_frame(TextFrame(text="Sorry, I encountered an error starting the brain."))
@@ -647,20 +647,20 @@ class AgriNetLLMService(FrameProcessor):
                 else:
                     full_prompt = user_text
                     
-                logger.info(f"📜 Added history context ({len(previous_turns)} msgs) | Prompt length: {len(full_prompt)}")
+                logger.info(f"[HIST] Added history context ({len(previous_turns)} msgs) | Prompt length: {len(full_prompt)}")
             except Exception as e:
-                logger.error(f"❌ Error constructing history: {e}")
+                logger.error(f"[ERROR] Error constructing history: {e}")
                 full_prompt = user_text # Fallback to just current query
 
             # CRITICAL: Force TTS Reset for Multi-Turn Stability
             # Send an EndFrame to flush any previous state in the TTS service
             # This ensures it's ready for the new turn.
             # try:
-            #     logger.critical("🔄 AgriNet: Forcing TTS Reset (EndFrame) before new turn")
+            #     logger.critical("[STATUS] AgriNet: Forcing TTS Reset (EndFrame) before new turn")
             #     await self.push_frame(EndFrame())
             # except: pass
 
-            logger.info(f"🚀 Starting FAST LLM Generation...")
+            logger.info(f"[START] Starting FAST LLM Generation...")
             
             # Helper for sentence buffering to avoid spamming TTS
             frame_buffer = ""
@@ -682,12 +682,12 @@ class AgriNetLLMService(FrameProcessor):
                             sentence = parts[i] + parts[i+1]
                             
                             try:
-                                logger.critical(f"🗣️ Pushing TTS Chunk: '{sentence}'")
+                                logger.critical(f"[SPEAK] Pushing TTS Chunk: '{sentence}'")
                                 # Normalize for TTS (Amharic numbers)
                                 tts_text = sentence
                                 if self.context.lang_code and self.context.lang_code.lower().startswith('am'):
                                     tts_text = replace_numbers_with_amharic_words(sentence)
-                                    logger.critical(f"🗣️ Pushing TTS Chunk (Converted): '{tts_text}'")
+                                    logger.critical(f"[SPEAK] Pushing TTS Chunk (Converted): '{tts_text}'")
                                 
                                 # Append \n to FORCE FLUSH the aggregator
                                 await self.push_frame(TextFrame(text=tts_text + "\n"))
@@ -700,11 +700,11 @@ class AgriNetLLMService(FrameProcessor):
                     # Safety valve: If buffer huge (no punctuation), flush it
                     if len(frame_buffer) > 200:
                          try:
-                             logger.critical(f"🗣️ Pushing TTS Buffer (Overflow): '{frame_buffer}'")
+                             logger.critical(f"[SPEAK] Pushing TTS Buffer (Overflow): '{frame_buffer}'")
                              tts_text = frame_buffer
                              if self.context.lang_code and self.context.lang_code.lower().startswith('am'):
                                  tts_text = replace_numbers_with_amharic_words(frame_buffer)
-                                 logger.critical(f"🗣️ Pushing TTS Buffer (Converted): '{tts_text}'")
+                                 logger.critical(f"[SPEAK] Pushing TTS Buffer (Converted): '{tts_text}'")
                              await self.push_frame(TextFrame(text=tts_text + "\n"))
                              frame_buffer = ""
                          except Exception as e:
@@ -713,18 +713,18 @@ class AgriNetLLMService(FrameProcessor):
             # Push remaining buffer
             if frame_buffer:
                  try:
-                     logger.critical(f"🗣️ Pushing Final TTS Chunk: '{frame_buffer}'")
+                     logger.critical(f"[SPEAK] Pushing Final TTS Chunk: '{frame_buffer}'")
                      tts_text = frame_buffer
                      if self.context.lang_code and self.context.lang_code.lower().startswith('am'):
                          tts_text = replace_numbers_with_amharic_words(frame_buffer)
-                         logger.critical(f"🗣️ Pushing Final TTS Chunk (Converted): '{tts_text}'")
+                         logger.critical(f"[SPEAK] Pushing Final TTS Chunk (Converted): '{tts_text}'")
                      await self.push_frame(TextFrame(text=tts_text))
                  except Exception as e:
                      logger.warning(f"Frame push failed: {e}")
             
             # Check if we generated anything
             if not ai_full_text:
-                logger.warning("⚠️ AgriNet: No response generated! Sending fallback.")
+                logger.warning("[WARN] AgriNet: No response generated! Sending fallback.")
                 ai_full_text = "I'm sorry, I couldn't find the information you asked for. Please try again."
                 try:
                     await self.push_frame(TextFrame(text=ai_full_text))
@@ -735,7 +735,7 @@ class AgriNetLLMService(FrameProcessor):
             self.history.append({"role": "assistant", "content": ai_full_text})
 
             # Send full response directly to frontend via websocket
-            logger.info(f"📤 Sending response to frontend: '{ai_full_text[:50]}...'")
+            logger.info(f"[SEND] Sending response to frontend: '{ai_full_text[:50]}...'")
             await self._websocket.send_json({
                 "type": "llm_chunk",
                 "text": ai_full_text,
@@ -749,7 +749,7 @@ class AgriNetLLMService(FrameProcessor):
                 logger.warning(f"EndFrame push failed: {e}")
 
         except asyncio.CancelledError:
-            logger.info("🛑 AgriNet: Response generation cancelled (User spoke again)")
+            logger.info("[STOP] AgriNet: Response generation cancelled (User spoke again)")
         except Exception as e:
             logger.error(f"LLM Error: {e}")
             import traceback
@@ -790,7 +790,7 @@ class RawFastAPIWebsocketInputTransport(BaseInputTransport):
                     data = message["bytes"]
                     self._packet_count += 1
                     if self._packet_count % 25 == 0:
-                        logger.info(f"📦 Received {self._packet_count} packets")
+                        logger.info(f"[RECV] Received {self._packet_count} packets")
                     
                     try:
                         audio_float = np.frombuffer(data, dtype=np.float32)
@@ -816,7 +816,7 @@ class RawFastAPIWebsocketInputTransport(BaseInputTransport):
                                     
                                     if not self._speech_started and self._speaking_count >= SPEAKING_THRESHOLD:
                                         self._speech_started = True
-                                        logger.info(f"🟢 Speech STARTED")
+                                        logger.info(f"[INIT] Speech STARTED")
                                         await self.push_frame(UserStartedSpeakingFrame())
                                         await self._websocket.send_json({"type": "speech_start"})
                                         
@@ -826,7 +826,7 @@ class RawFastAPIWebsocketInputTransport(BaseInputTransport):
                                     
                                     if self._speech_started and self._quiet_count >= QUIET_THRESHOLD:
                                         self._speech_started = False
-                                        logger.info(f"🔴 Speech STOPPED")
+                                        logger.info(f"[TOTAL] Speech STOPPED")
                                         await self.push_frame(UserStoppedSpeakingFrame())
                                         await self._websocket.send_json({"type": "speech_end"})
                                 
@@ -864,7 +864,7 @@ class RawFastAPIWebsocketOutputTransport(BaseOutputTransport):
     async def send_frame(self, frame: Frame):
         if isinstance(frame, TTSAudioRawFrame):
             try:
-                logger.info(f"📤 Sending Audio Chunk: {len(frame.audio)} bytes")
+                logger.info(f"[SEND] Sending Audio Chunk: {len(frame.audio)} bytes")
                 await self._websocket.send_bytes(frame.audio)
             except Exception as e:
                 logger.error(f"Failed to send audio: {e}")
@@ -955,16 +955,16 @@ async def run_pipecat_pipeline(websocket: WebSocket, session_id: str, lang: str 
                 try:
                     await self.ws.send_json(data)
                 except (RuntimeError, ConnectionError) as e:
-                     logger.warning(f"⚠️ ws.send_json failed (client disconnected?): {e}")
+                     logger.warning(f"[WARN] ws.send_json failed (client disconnected?): {e}")
         
         async def send_bytes(self, data: bytes):
             async with self.lock:
-                logger.critical(f"🔊 SENDING AUDIO: {len(data)} bytes")
+                logger.critical(f"[TTS] SENDING AUDIO: {len(data)} bytes")
                 try:
                     await self.ws.send_bytes(data)
-                    # logger.critical("✅ AUDIO SENT SUCCESSFULLY")
+                    # logger.critical("[SUCCESS] AUDIO SENT SUCCESSFULLY")
                 except Exception as e:
-                    logger.critical(f"❌ SEND FAILED: {e}")
+                    logger.critical(f"[ERROR] SEND FAILED: {e}")
                     raise
                 
         async def receive_bytes(self):
@@ -991,10 +991,10 @@ async def run_pipecat_pipeline(websocket: WebSocket, session_id: str, lang: str 
             from app.services.filters.deepfilternet_filter import DeepFilterNetFilter
             # post_filter=True applies aggressive suppression
             audio_filter = DeepFilterNetFilter(post_filter=True)
-            logger.info("✅ DeepFilterNet3 Filter initialized (Priority)")
+            logger.info("[SUCCESS] DeepFilterNet3 Filter initialized (Priority)")
         except Exception as e:
-            logger.error(f"❌ DeepFilterNet initialization failed: {e}")
-            logger.info("🔄 Falling back to RNNoise configuration...")
+            logger.error(f"[ERROR] DeepFilterNet initialization failed: {e}")
+            logger.info("[STATUS] Falling back to RNNoise configuration...")
             # Fall through to RNNoise check below if we want fallback, 
             # OR just let it proceed to next block. 
             # Currently strict logic: if DF fails, we try RNNoise if enabled?
@@ -1004,14 +1004,14 @@ async def run_pipecat_pipeline(websocket: WebSocket, session_id: str, lang: str 
         try:
             from pipecat.audio.filters.rnnoise_filter import RNNoiseFilter
             audio_filter = RNNoiseFilter(resampler_quality="HQ")
-            logger.info("✅ RNNoise Filter initialized (HQ Mode)")
+            logger.info("[SUCCESS] RNNoise Filter initialized (HQ Mode)")
         except ImportError:
-            logger.warning("⚠️ RNNoise module not found. Noise cancellation disabled.")
+            logger.warning("[WARN] RNNoise module not found. Noise cancellation disabled.")
         except Exception as e:
-            logger.error(f"❌ RNNoise initialization failed: {e}")
+            logger.error(f"[ERROR] RNNoise initialization failed: {e}")
             
     if not audio_filter:
-        logger.info("ℹ️ Noise Filtering DISABLED")
+        logger.info("[INFO] Noise Filtering DISABLED")
 
     transport = RawFastAPIWebsocketTransport(
         websocket=locked_ws,

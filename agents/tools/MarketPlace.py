@@ -83,18 +83,45 @@ async def find_crop_marketplace_by_name(
         if not marketplaces:
             return None
 
+        # Helper to patch coordinates from JSON if missing in DB
+        def patch_coordinates(market_dict):
+            if market_dict['latitude'] is None or market_dict['longitude'] is None:
+                from helpers.market_place_json import MARKETPLACES
+                region_key = market_dict['region']
+                if region_key in MARKETPLACES:
+                    for m_json in MARKETPLACES[region_key]:
+                         if m_json['name'].lower() == market_dict['name'].lower():
+                             logger.info(f"find_crop_marketplace_by_name: Patching missing coords for {market_dict['name']} from JSON")
+                             market_dict['latitude'] = m_json['lat']
+                             market_dict['longitude'] = m_json['lon']
+                             break
+            return market_dict
+
         if len(marketplaces) == 1:
             m = marketplaces[0]
-            return {
+            return patch_coordinates({
                 "name": m.name,
                 "name_amharic": m.name_amharic,
                 "region": m.region,
                 "region_amharic": m.region_amharic,
                 "latitude": m.latitude,
                 "longitude": m.longitude
-            }
+            })
 
-        # Multiple matches
+        # Multiple matches - Check for exact match first
+        for m in marketplaces:
+            if m.name.lower() == marketplace_name.lower():
+                logger.info(f"find_crop_marketplace_by_name: Found exact match '{m.name}' among {len(marketplaces)} results")
+                return patch_coordinates({
+                    "name": m.name,
+                    "name_amharic": m.name_amharic,
+                    "region": m.region,
+                    "region_amharic": m.region_amharic,
+                    "latitude": m.latitude,
+                    "longitude": m.longitude
+                })
+
+        # Multiple matches (and no exact match)
         regions_list = [f"{m.name} ({m.region})" for m in marketplaces]
         return f"Multiple marketplaces found: {', '.join(regions_list)}. Please specify region."
 
@@ -170,19 +197,31 @@ async def find_nearest_crop_marketplaces(
 
     logger.info(f"find_nearest_crop_marketplaces: region={region}")
 
-    if region not in MARKETPLACES:
-        return "Can you check in the supported regions: Amhara, Oromia, Tigray, Sidama, South West Ethiopia, SNNP"
+    # Aggregation of markets to search
+    markets_to_search = []
+    
+    if region and region in MARKETPLACES:
+        markets_to_search = MARKETPLACES[region]
+    else:
+        # Fallback: Search ALL supported regions if region is unknown/None
+        logger.info(f"Region '{region}' not specific/found. Searching ALL regions.")
+        for r_markets in MARKETPLACES.values():
+            markets_to_search.extend(r_markets)
 
     results = []
-    for m in MARKETPLACES[region]:
-        distance = haversine(user_lat, user_lon, m["lat"], m["lon"])
-        if distance <= radius_km:
-            results.append({
-                "name": m["name"],
-                "latitude": m["lat"],
-                "longitude": m["lon"],
-                "distance_km": round(distance, 2)
-            })
+    for m in markets_to_search:
+        try:
+            distance = haversine(user_lat, user_lon, m["lat"], m["lon"])
+            if distance <= radius_km:
+                results.append({
+                    "name": m["name"],
+                    "latitude": m["lat"],
+                    "longitude": m["lon"],
+                    "distance_km": round(distance, 2),
+                    "region": m.get("region", "Unknown") # Ensure region is in result
+                })
+        except Exception as e:
+            continue
 
     results.sort(key=lambda x: x["distance_km"])
     return results[:limit]
@@ -263,16 +302,43 @@ async def find_livestock_marketplace_by_name(
         if not marketplaces:
             return None
 
+        # Helper to patch coordinates from JSON if missing in DB
+        def patch_coordinates(market_dict):
+            if market_dict['latitude'] is None or market_dict['longitude'] is None:
+                # Use the imported LIVESTOCK_MARKETPLACES
+                region_key = market_dict['region']
+                if region_key in LIVESTOCK_MARKETPLACES:
+                    for m_json in LIVESTOCK_MARKETPLACES[region_key]:
+                         if m_json['name'].lower() == market_dict['name'].lower():
+                             logger.info(f"find_livestock_marketplace_by_name: Patching missing coords for {market_dict['name']} from JSON")
+                             market_dict['latitude'] = m_json['lat']
+                             market_dict['longitude'] = m_json['lon']
+                             break
+            return market_dict
+
         if len(marketplaces) == 1:
             m = marketplaces[0]
-            return {
+            return patch_coordinates({
                 "name": m.name,
                 "name_amharic": m.name_amharic,
                 "region": m.region,
                 "region_amharic": m.region_amharic,
                 "latitude": m.latitude,
                 "longitude": m.longitude
-            }
+            })
+
+        # Multiple matches - Check for exact match first
+        for m in marketplaces:
+            if m.name.lower() == marketplace_name.lower():
+                logger.info(f"find_livestock_marketplace_by_name: Found exact match '{m.name}' among {len(marketplaces)} results")
+                return patch_coordinates({
+                    "name": m.name,
+                    "name_amharic": m.name_amharic,
+                    "region": m.region,
+                    "region_amharic": m.region_amharic,
+                    "latitude": m.latitude,
+                    "longitude": m.longitude
+                })
 
         # Multiple matches
         regions_list = [f"{m.name} ({m.region})" for m in marketplaces]
@@ -349,19 +415,32 @@ async def find_nearest_livestock_marketplaces(
         raise ValueError(f"Limit must be positive: {limit}")
 
     logger.info(f"find_nearest_livestock_marketplaces: region={region}")
-    if region not in LIVESTOCK_MARKETPLACES:
-        return "Can you check in the supported regions: Afar, Oromia, Somali"
+    
+    # Aggregation of markets to search
+    markets_to_search = []
+    
+    if region and region in LIVESTOCK_MARKETPLACES:
+        markets_to_search = LIVESTOCK_MARKETPLACES[region]
+    else:
+        # Fallback: Search all supported regions if region unknown/None
+        logger.info(f"Livestock Region '{region}' not specific/found. Searching ALL livestock regions.")
+        for r_markets in LIVESTOCK_MARKETPLACES.values():
+            markets_to_search.extend(r_markets)
 
     results = []
-    for m in LIVESTOCK_MARKETPLACES[region]:
-        distance = haversine(user_lat, user_lon, m["lat"], m["lon"])
-        if distance <= radius_km:
-            results.append({
-                "name": m["name"],
-                "latitude": m["lat"],
-                "longitude": m["lon"],
-                "distance_km": round(distance, 2)
-            })
+    for m in markets_to_search:
+        try:
+            distance = haversine(user_lat, user_lon, m["lat"], m["lon"])
+            if distance <= radius_km:
+                results.append({
+                    "name": m["name"],
+                    "latitude": m["lat"],
+                    "longitude": m["lon"],
+                    "distance_km": round(distance, 2),
+                    "region": m.get("region", "Unknown")
+                })
+        except Exception as e:
+            continue
 
     results.sort(key=lambda x: x["distance_km"])
     return results[:limit]

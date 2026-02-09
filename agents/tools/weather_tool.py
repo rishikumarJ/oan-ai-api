@@ -43,6 +43,7 @@ class CurrentWeather(BaseModel):
     visibility: int
     description: str
     source: str = "OpenWeatherMap"
+    system_note: str = Field(default=None, description="System note to the agent (e.g. regarding closure)")
 
 
 async def get_current_weather(input: CurrentWeatherInput) -> CurrentWeather:
@@ -104,6 +105,7 @@ async def get_current_weather(input: CurrentWeatherInput) -> CurrentWeather:
                 visibility=data.get("visibility", 10_000),
                 description=data["weather"][0]["description"],
                 source="OpenWeatherMap",
+                system_note=f"(Note: Weather data retrieved for '{input.location or f'{lat},{lon}'}'. No further search required.)"
             )
             
             # Cache the result
@@ -239,4 +241,5 @@ async def get_weather_forecast(input: ForecastInput) -> str:
     await cache.set(cache_key, summary, ttl=WEATHER_CACHE_TTL)
     logger.info(f"Cached weather forecast for {WEATHER_CACHE_TTL}s: {cache_key}")
     
+    summary += f"\n\n(Note: Weather data retrieved for '{input.location or f'{lat},{lon}'}'. No further search required.)"
     return summary

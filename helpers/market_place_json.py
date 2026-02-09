@@ -365,6 +365,11 @@ LIVESTOCK_MARKETPLACES = {
 
 
 EXACT_MATCH_UP_MARKETPLACES = {
+    "Addis Ababa": {"region": "Addis Ababa", "lat": 9.03, "lon": 38.74},
+    "addis ababa": {"region": "Addis Ababa", "lat": 9.03, "lon": 38.74},
+    
+
+
     "kelaji": {"region": "Amhara", "lat": 11.45, "lon": 37.32},
     "ቅላጅ": {"region": "Amhara", "lat": 11.45, "lon": 37.32},
     "Fendika": {"region": "Amhara", "lat": 11.6, "lon": 37.38},

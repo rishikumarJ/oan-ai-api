@@ -20,7 +20,7 @@ geocoder = Nominatim(
     user_agent="ethiopia_agri_chatbot",
     domain=os.getenv("NOMINATIM_DOMAIN", ""),  
     scheme="http",
-    timeout=10
+    timeout=3
 )
 
 
@@ -52,7 +52,8 @@ class Location(BaseModel):
 async def forward_geocode(place_name: str) -> Optional[Location]:
     """Use this tool to get latitude and longitude of a place given its name."""
     # Normalize place name for cache key
-    cache_key = f"geocode:forward:{place_name.lower().strip()}"
+    norm_name = place_name.lower().strip()
+    cache_key = f"geocode:forward:{norm_name}"
     
     # Try to get from cache first
     cached_data = await cache.get(cache_key)

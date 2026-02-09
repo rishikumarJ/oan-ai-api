@@ -32,16 +32,16 @@ async def lifespan(app: FastAPI):
         await cache.set("health_check", "ok", ttl=60)
         test_value = await cache.get("health_check")
         if test_value == "ok":
-            logger.info("✅ Cache connection successful")
+            logger.info("[SUCCESS] Cache connection successful")
         else:
-            logger.warning("⚠️ Cache connection issue - values not persisting correctly")
+            logger.warning("[WARN] Cache connection issue - values not persisting correctly")
     except Exception as e:
-        logger.error(f"❌ Cache connection failed: {str(e)}")
+        logger.error(f"[ERROR] Cache connection failed: {str(e)}")
 
     # Initialize database connection pool
-    logger.info("✅ Database engine initialized")
+    logger.info("[SUCCESS] Database engine initialized")
 
-    logger.info("✅ Application startup complete")
+    logger.info("[SUCCESS] Application startup complete")
 
     yield
 
@@ -50,9 +50,9 @@ async def lifespan(app: FastAPI):
 
     # Close database connections
     await close_db()
-    logger.info("✅ Database connections closed")
+    logger.info("[SUCCESS] Database connections closed")
 
-    logger.info("✅ Application shutdown complete")
+    logger.info("[SUCCESS] Application shutdown complete")
 
 def create_app() -> FastAPI:
     """

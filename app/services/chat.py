@@ -29,13 +29,13 @@ async def stream_chat_messages(
     history: list,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
-    # ⏱️ START TIMING
+    # [TIMING] START TIMING
     pipeline_start = time.perf_counter()
     
     # Generate a unique content ID for this query
     content_id = f"query_{session_id}_{len(history)//2 + 1}"
     
-    # ⏱️ STAGE 1: Context preparation
+    # [TIMING] STAGE 1: Context preparation
     stage_start = time.perf_counter()
     deps = FarmerContext(
         query=query,
@@ -50,13 +50,10 @@ async def stream_chat_messages(
     
     user_message = f"{last_response}{deps.get_user_message()}"
     stage_time = (time.perf_counter() - stage_start) * 1000
-    logger.info(f"⏱️ [TIMING] Context preparation: {stage_time:.2f}ms")
+    logger.info(f"[TIMING] Context preparation: {stage_time:.2f}ms")
     
-    # ⏱️ STAGE 2: Pre-Moderation (Native Gemini Safety Settings)
-    # Replaced external classifier with native Gemini safety_settings in FastGeminiService
-    logger.info(f"⏱️ [TIMING] Pre-moderation: Handled natively by Gemini")
 
-    # ⏱️ STAGE 3: History trimming
+    # [TIMING] STAGE 3: History trimming
     stage_start = time.perf_counter()
     trimmed_history = trim_history(
         history,
@@ -65,9 +62,9 @@ async def stream_chat_messages(
         include_tool_calls=True
     )
     stage_time = (time.perf_counter() - stage_start) * 1000
-    logger.info(f"⏱️ [TIMING] History trimming: {stage_time:.2f}ms")
+    logger.info(f"[TIMING] History trimming: {stage_time:.2f}ms")
 
-    # ⏱️ STAGE 4: Main agent execution (Phase 3: FastGeminiService)
+    # [TIMING] STAGE 4: Main agent execution (Phase 3: FastGeminiService)
     stage_start = time.perf_counter()
     
     # Initialize Fast Service with correct language (sets system prompt)
@@ -85,7 +82,7 @@ async def stream_chat_messages(
             full_text += chunk
             
     llm_exec_time = (time.perf_counter() - stage_start) * 1000
-    logger.info(f"⏱️ [TIMING] Main agent execution (FastGemini): {llm_exec_time:.2f}ms")
+    logger.info(f"[TIMING] Main agent execution (FastGemini): {llm_exec_time:.2f}ms")
     
     # Map FastGemini metrics to deps for the table
     if 'timings' in metrics:
@@ -93,10 +90,10 @@ async def stream_chat_messages(
     
     # ⏱️ STAGE 5: Source extraction (Skipped for Speed/Direct API)
     # Direct API allows tool use but doesn't return structured sources object like Pydantic AI
-    logger.info(f"⏱️ [TIMING] Source extraction: N/A (Direct API)")
+    logger.info(f"[TIMING] Source extraction: N/A (Direct API)")
     sources = [] 
 
-    # ⏱️ STAGE 6: History update
+    # [TIMING] STAGE 6: History update
     stage_start = time.perf_counter()
     
     # Manually construct new messages using Pydantic AI models to ensure compatibility
@@ -113,10 +110,10 @@ async def stream_chat_messages(
     ]
     await update_message_history(session_id, messages)
     stage_time = (time.perf_counter() - stage_start) * 1000
-    logger.info(f"⏱️ [TIMING] History update: {stage_time:.2f}ms")
+    logger.info(f"[TIMING] History update: {stage_time:.2f}ms")
     # ⏱️ TOTAL PIPELINE TIME
     total_time = (time.perf_counter() - pipeline_start) * 1000
-    logger.info(f"⏱️ [TIMING] ═══ TOTAL PIPELINE: {total_time:.2f}ms ═══")
+    logger.info(f"[TIMING] === TOTAL PIPELINE: {total_time:.2f}ms ===")
     
     # Return complete response as JSON
     response_data = {
@@ -168,27 +165,27 @@ async def stream_chat_messages(
         query_preview = query[:60] + "..." if len(query) > 60 else query
         
         log_lines = [
-            f"\n{'═'*60}",
-            f"📊 PERFORMANCE METRICS BREAKDOWN (TEXT MODE)",
-            f"{'═'*60}",
-            f"🔹 Query: {query_preview}",
-            f"{'─'*60}",
+            f"\n{'='*60}",
+            f"[METRICS] PERFORMANCE BREAKDOWN (TEXT MODE)",
+            f"{'='*60}",
+            f"Query: {query_preview}",
+            f"{'-'*60}",
             f"",
-            f"📍 STAGE TIMINGS:",
-            f"   🎤 STT Transcription:     {'N/A':>8}",
-            f"   ⚡ LLM Total Time:        {llm_exec_time:>8.2f} ms",
+            f"[TIMINGS] STAGE TIMINGS:",
+            f"   [STT] Transcription:     {'N/A':>8}",
+            f"   [LLM] Total Time:        {llm_exec_time:>8.2f} ms",
             f"",
-            f"   └─ LLM DETAILS:",
-            f"      🛠️  Tool Calls:          {tool_count} calls",
-            f"      ⚙️  Tool Processing:     {total_tool_time:>8.2f} ms",
-            f"      ⚖️  Moderation:          {mod_display}",
+            f"   LLM DETAILS:",
+            f"      [TOOLS] Calls:          {tool_count} calls",
+            f"      [PROC] Processing:      {total_tool_time:>8.2f} ms",
+            f"      [MOD] Moderation:       {mod_display}",
             f"",
-            f"   🔊 TTS Synthesis:         {'N/A':>8}",
+            f"   [TTS] Synthesis:         {'N/A':>8}",
             f"",
-            f"{'─'*60}",
-            f"📊 AGGREGATE METRICS:",
-            f"   🔴 TOTAL E2E LATENCY:     {e2e_total:>8.2f} ms",
-            f"{'═'*60}"
+            f"{'-'*60}",
+            f"[METRICS] AGGREGATE:",
+            f"   [TOTAL] E2E LATENCY:     {e2e_total:>8.2f} ms",
+            f"{'='*60}"
         ]
         
         for line in log_lines:

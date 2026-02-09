@@ -118,35 +118,24 @@ class OpenRouterLLMProvider(LLMProvider):
 
             if self.enable_streaming:
                 # STREAMING MODE: Try run_stream with stream_text for token streaming
-                print("\n" + "╔" + "=" * 78 + "╗")
-                print("║" + " " * 25 + "🚀 LLM REQUEST START" + " " * 32 + "║")
-                print("╚" + "=" * 78 + "╝")
                 logger.info("=" * 80)
-                logger.info("🚀 LLM REQUEST START")
+                logger.info("[START] LLM REQUEST START")
                 logger.info("=" * 80)
                 logger.debug("Using streaming mode with run_stream()")
                 
                 # Get and log the full system prompt
                 system_prompt = get_system_prompt(prompt_file=language)
-                print(f"\n📝 SYSTEM PROMPT:")
-                print(f"   Length: {len(system_prompt)} chars")
-                print(f"   Preview: {system_prompt[:300]}...")
-                print(f"\n💬 USER QUERY: {context.query}")
-                print(f"🌍 LANGUAGE: {language}")
-                print(f"📚 HISTORY LENGTH: {len(history)} messages")
-                print(f"🎯 INSTRUCTIONS: {instructions[:100]}...")
                 
-                logger.info(f"📝 SYSTEM PROMPT LENGTH: {len(system_prompt)} chars")
-                logger.info(f"📝 FULL SYSTEM PROMPT:\n{system_prompt}")
-                logger.info(f"💬 USER QUERY: {context.query}")
-                logger.info(f"🌍 LANGUAGE: {language}")
-                logger.info(f"📚 HISTORY LENGTH: {len(history)} messages")
-                logger.info(f"🎯 INSTRUCTIONS: {instructions}")
+                logger.info(f"[INFO] SYSTEM PROMPT LENGTH: {len(system_prompt)} chars")
+                logger.info(f"[INFO] FULL SYSTEM PROMPT:\n{system_prompt}")
+                logger.info(f"[USER] USER QUERY: {context.query}")
+                logger.info(f"[LANG] LANGUAGE: {language}")
+                logger.info(f"[HIST] HISTORY LENGTH: {len(history)} messages")
+                logger.info(f"[INSTR] INSTRUCTIONS: {instructions}")
                 
                 stream_start = time.time()
-                print(f"\n⏱️  REQUEST SENT: {time.strftime('%H:%M:%S', time.localtime(stream_start))}.{int((stream_start % 1) * 1000):03d}")
-                print("─" * 80)
-                logger.info(f"⏱️  REQUEST SENT AT: {stream_start:.3f}")
+                stream_start = time.time()
+                logger.info(f"[TIMING] REQUEST SENT AT: {stream_start:.3f}")
                 
                 first_text_time = None
                 text_chunk_count = 0
@@ -156,8 +145,7 @@ class OpenRouterLLMProvider(LLMProvider):
                 tool_result_sent_time = None
                 
                 # Send initial status BEFORE entering the stream context
-                print("\n🔄 SENDING INITIAL STATUS...")
-                logger.info("🔄 Sending initial status: Thinking...")
+                logger.info("[STATUS] Sending initial status: Thinking...")
                 yield "[STATUS:Thinking...]"
                 
                 # Small delay to ensure the status is sent and visible
@@ -176,8 +164,7 @@ class OpenRouterLLMProvider(LLMProvider):
                         tool_results = []
                         current_tool_name = None
                         
-                        print("\n🔄 WAITING FOR LLM RESPONSE...")
-                        logger.info("🔄 STREAMING TEXT:")
+                        logger.info("[STATUS] STREAMING TEXT:")
                         logger.info(f"Stream object type: {type(stream)}")
                         logger.info(f"Stream object: {stream}")
 
@@ -193,13 +180,9 @@ class OpenRouterLLMProvider(LLMProvider):
                                     if first_text_time is None:
                                         first_text_time = time.time()
                                         elapsed = first_text_time - stream_start
-                                        print("\n" + "┌" + "─" * 78 + "┐")
-                                        print(f"│ ✅ FIRST TEXT CHUNK received in {elapsed:.3f}s" + " " * (78 - 40 - len(f"{elapsed:.3f}")) + "│")
-                                        print("└" + "─" + "─" * 78 + "┘")
-                                        logger.info(f"✅ FIRST TEXT CHUNK received in {elapsed:.3f}s")
+                                        logger.info(f"[SUCCESS] FIRST TEXT CHUNK received in {elapsed:.3f}s")
                                     
                                     if text_chunk_count <= 3:
-                                        print(f"   📝 Chunk #{text_chunk_count}: '{chunk[:60]}...' ({len(chunk)} chars)")
                                         logger.debug(f"Chunk #{text_chunk_count}: '{chunk[:50]}...' ({len(chunk)} chars)")
                                     
                                     collected_text += chunk
@@ -224,12 +207,12 @@ class OpenRouterLLMProvider(LLMProvider):
                                     if filtered_chunk.strip():
                                         got_output = True
                                         yield filtered_chunk
-                                        logger.debug(f"✅ Yielded filtered chunk: '{filtered_chunk[:50]}'")
+                                        logger.debug(f"[SUCCESS] Yielded filtered chunk: '{filtered_chunk[:50]}'")
                                     elif chunk != filtered_chunk:
-                                        logger.warning(f"⚠️  Filtered forbidden phrase from chunk: '{chunk[:50]}'")
-                                        logger.warning(f"⚠️  Chunk was completely filtered out!")
+                                        logger.warning(f"[WARNING] Filtered forbidden phrase from chunk: '{chunk[:50]}'")
+                                        logger.warning(f"[WARNING] Chunk was completely filtered out!")
                                     else:
-                                        logger.warning(f"⚠️  Empty chunk after filtering: original='{chunk[:50]}'")
+                                        logger.warning(f"[WARNING] Empty chunk after filtering: original='{chunk[:50]}'")
                         
                         except Exception as stream_error:
                             logger.error(f"Error in stream: {stream_error}", exc_info=True)
@@ -241,22 +224,13 @@ class OpenRouterLLMProvider(LLMProvider):
                         
                         
                         if not got_output:
-                            print("\n⚠️  WARNING: Streaming completed but no text output received")
                             logger.warning("Streaming completed but no text output received")
                             logger.warning(f"Total collected text: '{collected_text[:200]}'")
                             logger.warning(f"Text chunk count: {text_chunk_count}")
                             yield "I couldn't generate a response. Please try again."
                         else:
                             total_time = time.time() - stream_start
-                            print("\n" + "╔" + "=" * 78 + "╗")
-                            print("║" + " " * 23 + "✅ LLM STREAMING COMPLETED" + " " * 28 + "║")
-                            print("╚" + "=" * 78 + "╝")
-                            print(f"   ⏱️  Total time: {total_time:.3f}s")
-                            print(f"   📏 Response length: {len(collected_text)} chars")
-                            print(f"   📦 Chunks received: {text_chunk_count}")
-                            print(f"   💬 Response: {collected_text[:150]}...")
-                            
-                            logger.info(f"✅ LLM streaming completed in {total_time:.3f}s")
+                            logger.info(f"[SUCCESS] LLM streaming completed in {total_time:.3f}s")
                             logger.info(f"   Response: {len(collected_text)} chars, {text_chunk_count} chunks")
                             logger.info(f"   Full response: {collected_text}")
 
@@ -269,7 +243,7 @@ class OpenRouterLLMProvider(LLMProvider):
                             response_stream = stream
 
                 except Exception as stream_error:
-                    print(f"\n❌ STREAMING ERROR: {stream_error}")
+                    logger.error(f"[ERROR] STREAMING ERROR: {stream_error}")
                     logger.error(f"Streaming error: {stream_error}", exc_info=True)
                     yield "I encountered an error while streaming. Please try again."
                     return

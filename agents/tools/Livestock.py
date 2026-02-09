@@ -7,6 +7,8 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import joinedload
 from helpers.utils import get_logger
 from app.core.cache import cache
+import re
+from agents.tools.MarketPlace import find_livestock_marketplace_by_name, find_nearest_livestock_marketplaces
 
 logger = get_logger(__name__)
 
@@ -131,17 +133,6 @@ async def get_livestock_price_in_marketplace(
 ) -> str:
     """
     Get detailed price information for a specific livestock type in a marketplace.
-    
-    ⚠️ NOTE: Use get_livestock_price_quick() instead for faster results.
-    Only use this tool if get_livestock_price_quick() fails or you need to verify data.
-
-    Args:
-        marketplace_name: Name of the livestock marketplace
-        livestock_type: Type of livestock (e.g., "Cattle", "Goat", "Sheep")
-        region: Optional region name to disambiguate if same marketplace name exists in multiple regions
-
-    Returns:
-        Formatted price information with date
     """
     logger.info(f"get_livestock_price_in_marketplace: livestock={livestock_type}, marketplace={marketplace_name}, region={region}")
 
@@ -194,32 +185,22 @@ async def get_livestock_price_in_marketplace(
         price_data_breeds = {}
         for price_row in price_data_list:
             breed_key = price_row.breed_name or "Default"
-
-            # Build variations info from meta_data
             variations_info = ""
             if price_row.meta_data and price_row.meta_data.get("variations"):
                 variations = price_row.meta_data["variations"]
                 var_details = []
                 for var in variations:
                     parts = []
-                    if var.get("gender"):
-                        parts.append(var["gender"])
-                    if var.get("age"):
-                        parts.append(var["age"])
-                    if var.get("grade"):
-                        parts.append(f"Grade: {var['grade']}")
-                    if var.get("productionType"):
-                        parts.append(f"Type: {var['productionType']}")
-                    if var.get("location"):
-                        parts.append(f"From: {var['location']}")
+                    if var.get("gender"): parts.append(var["gender"])
+                    if var.get("age"): parts.append(var["age"])
+                    if var.get("grade"): parts.append(f"Grade: {var['grade']}")
+                    if var.get("productionType"): parts.append(f"Type: {var['productionType']}")
+                    if var.get("location"): parts.append(f"From: {var['location']}")
 
                     price_range = ""
                     if var.get("pmin") and var.get("pmax"):
                         price_range = f" ({var['pmin']}-{var['pmax']} ETB)"
-                    elif var.get("pmin"):
-                        price_range = f" ({var['pmin']} ETB)"
-                    elif var.get("pmax"):
-                        price_range = f" ({var['pmax']} ETB)"
+                    elif var.get("pmin"): price_range = f" ({var['pmin']} ETB)"
 
                     if parts:
                         var_details.append(f"  - {', '.join(parts)}{price_range}")
@@ -227,31 +208,16 @@ async def get_livestock_price_in_marketplace(
                 if var_details:
                     variations_info = "\n* Variations:\n" + "\n".join(var_details)
 
-            if variations_info:
-                price_data_breeds[breed_key] = (
-                    f"{price_row.livestock_name} ({price_row.livestock_name_amharic}) prices in {marketplace.name}:\n\n"
-                    f"* Breed: {price_row.breed_name or 'N/A'}" +
-                    (f" ({price_row.breed_name_amharic})" if price_row.breed_name_amharic else "") + "\n"
-                    f"{variations_info}\n"
-                    f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}"
-                    f"* Source: https://nmis.et/"
-                )
-            else:
-                price_data_breeds[breed_key] = (
-                    f"{price_row.livestock_name} ({price_row.livestock_name_amharic}) prices in {marketplace.name}:\n\n"
-                    f"* Breed: {price_row.breed_name or 'N/A'}" +
-                    (f" ({price_row.breed_name_amharic})" if price_row.breed_name_amharic else "") + "\n"
-                    f"* Min Price: {price_row.min_price or 'N/A'} ETB\n"
-                    f"* Max Price: {price_row.max_price or 'N/A'} ETB\n"
-                    f"* Avg Price: {price_row.avg_price or 'N/A'} ETB\n"
-                    f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}"
-                    f"{variations_info}\n"
-                    f"* Source: https://nmis.et/"
-                )
+            price_data_breeds[breed_key] = (
+                f"{price_row.livestock_name} ({price_row.livestock_name_amharic}) prices in {marketplace.name}:\n\n"
+                f"* Breed: {price_row.breed_name or 'N/A'}" +
+                (f" ({price_row.breed_name_amharic})" if price_row.breed_name_amharic else "") + "\n"
+                f"{variations_info}\n"
+                f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}\n"
+                f"* Source: https://nmis.et/"
+            )
 
         result_str = "\n\n".join(price_data_breeds.values())
-        
-        # Cache result
         await cache.set(cache_key, result_str, ttl=CACHE_TTL_PRICE)
         return result_str
 
@@ -263,13 +229,6 @@ async def compare_livestock_prices_nearby(
 ) -> str:
     """
     Compare prices of a livestock type across multiple marketplaces.
-
-    Args:
-        livestock_type: Livestock type to compare (e.g., "Cattle", "Goat")
-        marketplace_names: List of marketplace names to compare
-
-    Returns:
-        Formatted comparison of prices across markets
     """
     logger.info(f"compare_livestock_prices_nearby: livestock={livestock_type}, marketplaces={marketplace_names}")
 
@@ -321,52 +280,12 @@ async def compare_livestock_prices_nearby(
         lines = [f"{livestock_type} price comparison:\n"]
 
         for idx, market in enumerate(markets, 1):
-            # Build variations info from meta_data
-            variations_info = ""
-            if market.meta_data and market.meta_data.get("variations"):
-                variations = market.meta_data["variations"]
-                var_details = []
-                for var in variations:
-                    parts = []
-                    if var.get("gender"):
-                        parts.append(var["gender"])
-                    if var.get("age"):
-                        parts.append(var["age"])
-                    if var.get("grade"):
-                        parts.append(f"Grade: {var['grade']}")
-                    if var.get("productionType"):
-                        parts.append(f"Type: {var['productionType']}")
-
-                    price_range = ""
-                    if var.get("pmin") and var.get("pmax"):
-                        price_range = f" ({var['pmin']}-{var['pmax']} ETB)"
-                    elif var.get("pmin"):
-                        price_range = f" ({var['pmin']} ETB)"
-                    elif var.get("pmax"):
-                        price_range = f" ({var['pmax']} ETB)"
-
-                    if parts:
-                        var_details.append(f"     - {', '.join(parts)}{price_range}")
-
-                if var_details:
-                    variations_info = "\n   * Variations:\n" + "\n".join(var_details)
-
-            if variations_info:
-                lines.append(
-                    f"{idx}. **{market.name}** ({market.region})\n"
-                    f"{variations_info}\n"
-                    f"   * As of Date: {market.price_date.strftime('%Y-%m-%d')}"
-                    f"   * Source: https://nmis.et/"
-                )
-            else:
-                lines.append(
-                    f"{idx}. **{market.name}** ({market.region})\n"
-                    f"   * Avg: {market.avg_price} ETB\n"
-                    f"   * Range: {market.min_price} - {market.max_price} ETB\n"
-                    f"   * As of Date: {market.price_date.strftime('%Y-%m-%d')}"
-                    f"{variations_info}\n"
-                    f"   * Source: https://nmis.et/"
-                )
+            lines.append(
+                f"{idx}. **{market.name}** ({market.region})\n"
+                f"   * Avg: {market.avg_price} ETB\n"
+                f"   * As of Date: {market.price_date.strftime('%Y-%m-%d')}\n"
+                f"   * Source: https://nmis.et/"
+            )
 
         return "\n\n".join(lines)
 
@@ -377,153 +296,60 @@ async def get_livestock_price_quick(
     marketplace_name: str
 ) -> str:
     """
-    Get livestock price by marketplace name directly - no region needed. FAST VERSION.
-    
-    CRITICAL: Only call this tool if BOTH parameters are clearly specified by the user.
-    DO NOT call this tool if:
-    - User didn't mention a specific livestock type
-    - User didn't mention a specific marketplace name
-    - User said vague things like "the livestock" or "the price"
-    
-    If information is missing, ASK the user for it instead of calling this tool.
-    
-    Args:
-        livestock_type: REQUIRED - Specific livestock type (e.g., "Cattle", "Goat", "Sheep", "Oxen")
-                       Must be explicitly mentioned by user, not assumed.
-        marketplace_name: REQUIRED - Specific marketplace name (e.g., "Dubti", "Bati", "Semera")
-                         Must be explicitly mentioned by user, not assumed.
-    
-    Returns:
+    Get livestock price by marketplace name directly.
     """
     logger.info(f"get_livestock_price_quick: livestock={livestock_type}, marketplace={marketplace_name}")
     
-    # Check cache
     cache_key = f"livestock:price:quick:{livestock_type}:{marketplace_name}"
     cached_data = await cache.get(cache_key)
-    if cached_data:
-        logger.info(f"Cache HIT for livestock price (quick): {cache_key}")
-        return cached_data
+    if cached_data: return cached_data
     
-    # Validate parameters - check for vague/generic inputs
-    vague_terms = ['livestock', 'animal', 'it', 'that', 'this', 'something', 'anything', 'price', 'market', 'the market']
+    vague_terms = ['livestock', 'animal', 'it', 'that', 'this', 'something', 'anything', 'price', 'market']
+    if livestock_type.lower() in vague_terms or len(livestock_type) < 2:
+        return "ERROR: I need to know which specific livestock type."
+    if marketplace_name.lower() in vague_terms or len(marketplace_name) < 3:
+        return "ERROR: I need to know which specific marketplace."
     
-    livestock_lower = livestock_type.lower().strip()
-    market_lower = marketplace_name.lower().strip()
-    
-    if livestock_lower in vague_terms or len(livestock_lower) < 2:
-        return "ERROR: I need to know which specific livestock type you're asking about. Please tell me the livestock type (e.g., cattle, goat, sheep, oxen)."
-    
-    if market_lower in vague_terms or len(market_lower) < 3:
-        return "ERROR: I need to know which specific marketplace you're asking about. Please tell me the marketplace name (e.g., Dubti, Bati, Semera)."
-    
-    # Normalize livestock type - handle common plural/singular variations
-    livestock_normalized = livestock_lower
-    plural_to_singular = {
-        'oxen': 'ox',
-        # 'cattle': 'cow',  <-- Removed to force clarification
-        'sheep': 'sheep',  
-        'goats': 'goat',
-        'camels': 'camel',
-        'calves': 'calf',
-        'cows': 'cow',
-    }
-    
-    # Try to normalize to singular form for better matching
-    if livestock_normalized in plural_to_singular:
-        livestock_normalized = plural_to_singular[livestock_normalized]
-        logger.info(f"Normalized '{livestock_type}' to '{livestock_normalized}' for better matching")
-    
-    # Import here to avoid circular imports
     from helpers.market_place_json import EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES
-    
-    # Find marketplace with case-insensitive and fuzzy matching
-    marketplace_info = None
-    name_lower = marketplace_name.lower().strip()
-    clean_name = name_lower.replace(" market", "").replace(" gebeya", "").replace(" city", "").strip()
-    
-    # Try exact match first
     marketplace_info = EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES.get(marketplace_name)
-    
-    # If not found, try fuzzy matching with difflib
     if not marketplace_info:
-        import difflib
-        
-        # Create a mapping of clean names to original keys for better matching
-        # key_map maps lowercase clean name -> original key
-        key_map = {}
-        all_keys = []
-        
-        for key in EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES.keys():
-            all_keys.append(key)
-            # Add cleaned versions to improve matching chances
-            key_clean = key.lower().replace(" market", "").replace(" gebeya", "").replace(" city", "").strip()
-            if key_clean not in key_map:
-                key_map[key_clean] = key
-        
-        # 1. Try matching against the full keys
-        matches = difflib.get_close_matches(name_lower, [k.lower() for k in all_keys], n=1, cutoff=0.7)
-        
-        if matches:
-            # Find the original key that matches this lowercase match
-            matched_lower = matches[0]
-            for key in all_keys:
-                if key.lower() == matched_lower:
-                    marketplace_name = key
-                    marketplace_info = EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES[key]
-                    logger.info(f"Fuzzy matched '{name_lower}' to '{key}' (score via direct match)")
-                    break
-        
-        # 2. If no match yet, try matching against cleaned names (often better for user inputs)
-        if not marketplace_info:
-            clean_input = name_lower.replace(" market", "").replace(" gebeya", "").replace(" city", "").strip()
-            clean_matches = difflib.get_close_matches(clean_input, list(key_map.keys()), n=1, cutoff=0.6)
-            
-            if clean_matches:
-                best_clean_match = clean_matches[0]
-                original_key = key_map[best_clean_match]
-                marketplace_name = original_key
-                marketplace_info = EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES[original_key]
-                logger.info(f"Fuzzy matched '{clean_input}' to '{original_key}' (via clean name)")
+        for key, value in EXACT_MATCH_UP_LIVESTOCK_MARKETPLACES.items():
+            if key.lower() == marketplace_name.lower():
+                marketplace_info = value
+                marketplace_name = key
+                break
     
     if not marketplace_info:
-        logger.info(f"get_livestock_price_quick: marketplace not found")
-        return f"Livestock marketplace '{marketplace_name}' not found. Please check the marketplace name."
+        from agents.tools.MarketPlace import find_livestock_marketplace_by_name
+        db_result = await find_livestock_marketplace_by_name(marketplace_name)
+        if isinstance(db_result, dict):
+            marketplace_info = db_result
+            marketplace_name = db_result['name']
     
-    region = marketplace_info.get("region")
-    
-    async with async_session_maker() as db:
-        # Get marketplace using the helper function
-        marketplace, error = await _get_marketplace(db, marketplace_name, region)
-        logger.debug(f"Getting marketplace: region={region}, marketplace={marketplace_name}")
-        
-        if error:
-            logger.info(f"get_livestock_price_quick: {error}")
-            return f"Marketplace '{marketplace_name}' not found in database."
+    if not marketplace_info:
+         return f"Marketplace '{marketplace_name}' not found."
 
-        # Get price info - use normalized livestock name for better matching
+    region = marketplace_info.get("region")
+    async with async_session_maker() as db:
+        marketplace, error = await _get_marketplace(db, marketplace_name, region)
+        if error: return f"Marketplace '{marketplace_name}' not found in database."
+
         stmt = (
             select(
                 MarketPrice.min_price,
                 MarketPrice.max_price,
                 MarketPrice.avg_price,
-                MarketPrice.modal_price,
                 MarketPrice.price_date,
                 MarketPrice.unit,
-                MarketPrice.meta_data,
                 Livestock.name_amharic.label('livestock_name_amharic'),
-                Livestock.name.label('livestock_name'),
-                LivestockBreed.name.label('breed_name'),
-                LivestockBreed.name_amharic.label('breed_name_amharic')
+                Livestock.name.label('livestock_name')
             )
             .join(Livestock, MarketPrice.livestock_id == Livestock.livestock_id)
-            .outerjoin(LivestockBreed, MarketPrice.breed_id == LivestockBreed.breed_id)
             .where(
                 MarketPrice.marketplace_id == marketplace.marketplace_id,
                 or_(
-                    func.lower(Livestock.name) == livestock_normalized,
-                    func.lower(Livestock.name).contains(livestock_normalized),
-                    func.lower(Livestock.name_amharic) == livestock_normalized,
-                    func.lower(Livestock.name_amharic).contains(livestock_normalized)
+                    func.lower(Livestock.name) == livestock_type.lower(),
+                    func.lower(Livestock.name_amharic) == livestock_type.lower()
                 ),
                 MarketPrice.price_date >= (func.current_date() - 364)
             )
@@ -533,73 +359,107 @@ async def get_livestock_price_quick(
         price_data_list = result.all()
 
         if not price_data_list:
-            logger.info(f"get_livestock_price_quick: no price data")
-            return f"No price data found for '{livestock_type}' in {marketplace_name} ({region})."
+            return f"No price data found for '{livestock_type}' in {marketplace_name}."
 
-        price_data_breeds = {}
-        for price_row in price_data_list:
-            breed_key = price_row.breed_name or "Default"
+        price_data = price_data_list[0]
+        res = (
+            f"{price_data.livestock_name} ({price_data.livestock_name_amharic}) prices in {marketplace_name} ({region}):\n\n"
+            f"* Avg Price: {price_data.avg_price} ETB\n"
+            f"* As of Date: {price_data.price_date.strftime('%Y-%m-%d')}\n"
+            f"* Source: https://nmis.et/"
+        )
+        await cache.set(cache_key, res, ttl=CACHE_TTL_PRICE)
+        return res
 
-            # Build variations info from meta_data
-            variations_info = ""
-            if price_row.meta_data and price_row.meta_data.get("variations"):
-                variations = price_row.meta_data["variations"]
-                var_details = []
-                for var in variations:
-                    parts = []
-                    if var.get("gender"):
-                        parts.append(var["gender"])
-                    if var.get("age"):
-                        parts.append(var["age"])
-                    if var.get("grade"):
-                        parts.append(f"Grade: {var['grade']}")
-                    if var.get("productionType"):
-                        parts.append(f"Type: {var['productionType']}")
-                    if var.get("location"):
-                        parts.append(f"From: {var['location']}")
 
-                    price_range = ""
-                    if var.get("pmin") and var.get("pmax"):
-                        price_range = f" ({var['pmin']}-{var['pmax']} ETB)"
-                    elif var.get("pmin"):
-                        price_range = f" ({var['pmin']} ETB)"
-                    elif var.get("pmax"):
-                        price_range = f" ({var['pmax']} ETB)"
+async def smart_livestock_price_query(
+    ctx: RunContext[FarmerContext],
+    livestock_type: str,
+    location: str,
+    is_proximity: bool = False,
+    ref_lat: float = None,
+    ref_lon: float = None
+) -> str:
+    """
+    Query livestock prices with support for proximity and automatic fallback.
+    
+    Args:
+        livestock_type: e.g. "Oxen", "Sheep"
+        location: Specific town/market name (e.g. "Amber", "Addis Ababa")
+        is_proximity: Set to True if user ask for "near", "around"
+        ref_lat: Optional latitude of the location if known (internal use).
+        ref_lon: Optional longitude of the location if known (internal use).
+    """
+    logger.info(f"smart_livestock_price_query: type={livestock_type}, location={location}, proximity={is_proximity}")
 
-                    if parts:
-                        var_details.append(f"  - {', '.join(parts)}{price_range}")
+    livestock_type = livestock_type.strip().capitalize()
+    location = location.strip().rstrip('?.!,')
 
-                if var_details:
-                    variations_info = "\n* Variations:\n" + "\n".join(var_details)
+    if not livestock_type: return "Please specify the livestock type."
+    if not location: return "Please specify the location."
 
-            if variations_info:
-                price_data_breeds[breed_key] = (
-                    f"{price_row.livestock_name} ({price_row.livestock_name_amharic}) prices in {marketplace_name} ({region}):\n\n"
-                    f"* Breed: {price_row.breed_name or 'N/A'}" +
-                    (f" ({price_row.breed_name_amharic})" if price_row.breed_name_amharic else "") + "\n"
-                    f"{variations_info}\n"
-                    f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}\n"
-                    f"* Source: https://nmis.et/"
-                )
-            else:
-                price_data_breeds[breed_key] = (
-                    f"{price_row.livestock_name} ({price_row.livestock_name_amharic}) prices in {marketplace_name} ({region}):\n\n"
-                    f"* Breed: {price_row.breed_name or 'N/A'}" +
-                    (f" ({price_row.breed_name_amharic})" if price_row.breed_name_amharic else "") + "\n"
-                    f"* Min Price: {price_row.min_price or 'N/A'} ETB\n"
-                    f"* Max Price: {price_row.max_price or 'N/A'} ETB\n"
-                    f"* Avg Price: {price_row.avg_price or 'N/A'} ETB\n"
-                    f"* Modal Price: {price_row.modal_price or 'N/A'} ETB\n"
-                    f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}"
-                    f"{variations_info}\n"
-                    f"* Source: https://nmis.et/"
-                )
-        
-        logger.info(f"get_livestock_price_quick: found {len(price_data_breeds)} breeds")
-        
-        # Format response
-        result_str = "\n\n".join(price_data_breeds.values())
-        
-        # Cache result
-        await cache.set(cache_key, result_str, ttl=CACHE_TTL_PRICE)
-        return result_str
+    # 1. Initial Lookup
+    result = await get_livestock_price_quick(ctx, livestock_type, location)
+    
+    # 2. Smart Fallback
+    no_data_found = "No price data found" in result or "Marketplace" in result and "not found" in result
+    
+    if (is_proximity or no_data_found) and location:
+        logger.info(f"smart_livestock_price_query: Proximity/Fallback triggered for '{location}'")
+        try:
+             from agents.tools.MarketPlace import find_livestock_marketplace_by_name, find_nearest_livestock_marketplaces
+             from agents.tools.maps import forward_geocode
+             from helpers.market_place_json import LIVESTOCK_MARKETPLACES
+             
+             ref_market = await find_livestock_marketplace_by_name(location)
+             lat, lon, region = None, None, None
+             
+             # Check if we have coordinates in our static JSON map (Fastest fallback)
+             # Handle "Arero, Oromia" -> "Arero"
+             simple_loc_name = location.split(',')[0].strip().lower()
+             json_market = None
+             
+             if not json_market:
+                 for r_list in LIVESTOCK_MARKETPLACES.values():
+                     for m in r_list:
+                         if m['name'].strip().lower() == simple_loc_name:
+                             json_market = m
+                             break
+                     if json_market: break
+             
+             if isinstance(ref_market, dict):
+                  lat, lon, region = ref_market.get('latitude'), ref_market.get('longitude'), ref_market.get('region')
+             elif json_market:
+                  logger.info(f"smart_livestock_price_query: Found '{location}' in local JSON map (lat={json_market['lat']})")
+                  lat, lon = json_market['lat'], json_market['lon']
+                  region = json_market.get('region')
+             elif ref_lat is not None and ref_lon is not None:
+                  logger.info(f"smart_livestock_price_query: Using provided coords for '{location}': ({ref_lat}, {ref_lon})")
+                  lat, lon = ref_lat, ref_lon
+             else:
+                  logger.info(f"smart_livestock_price_query: Using global geocode for '{location}'")
+                  geo = await forward_geocode(location)
+                  if geo: lat, lon = geo.latitude, geo.longitude
+             
+             if lat and lon:
+                  neighbors = await find_nearest_livestock_marketplaces(lat, lon, region=region, radius_km=200, limit=3)
+                  target = None
+                  for n in neighbors:
+                      if n['name'].lower() != location.lower():
+                          target = n
+                          break
+                  
+                  if target:
+                      logger.info(f"smart_livestock_price_query: Re-routing '{location}' -> '{target['name']}'")
+                      neighbor_result = await get_livestock_price_quick(ctx, livestock_type, target['name'])
+                      if neighbor_result and "prices in" in neighbor_result:
+                          msg = f"(Note: '{location}' has no direct data. Showing data for nearest market '{target['name']}'. No further search required.)"
+                          if no_data_found:
+                              return f"I couldn't find data for '{location}', but here is the data from the nearest market:\n\n{neighbor_result}\n\n{msg}"
+                          return f"{neighbor_result}\n\n{msg}"
+        except Exception as e:
+            logger.error(f"Fallback failed: {e}")
+
+    if result and "prices in" in result and "No further search required" not in result:
+        result += f"\n\n(Note: Price data retrieved for '{location}'. No further search required.)"
+    return result

@@ -380,12 +380,12 @@ def log_execution_time(func=None, logger=None):
                 duration = (end_time - start_time) * 1000
                 
                 _record_timing(args, kwargs, "tool_end", {"duration": duration})
-                log.info(f"⏱️  TOOL: {original_func.__name__} | Time: {duration:.2f} ms")
+                log.info(f"[TIMING] TOOL: {original_func.__name__} | Time: {duration:.2f} ms")
                 return result
             except Exception as e:
                 end_time = time.perf_counter()
                 duration = (end_time - start_time) * 1000
-                log.error(f"❌ TOOL_FAIL: {original_func.__name__} | Time: {duration:.2f} ms | Error: {e}")
+                log.error(f"[ERROR] TOOL_FAIL: {original_func.__name__} | Time: {duration:.2f} ms | Error: {e}")
                 raise e
         
         @functools.wraps(original_func)
@@ -399,12 +399,12 @@ def log_execution_time(func=None, logger=None):
                 duration = (end_time - start_time) * 1000
                 
                 _record_timing(args, kwargs, "tool_end", {"duration": duration})
-                log.info(f"⏱️  TOOL: {original_func.__name__} | Time: {duration:.2f} ms")
+                log.info(f"[TIMING] TOOL: {original_func.__name__} | Time: {duration:.2f} ms")
                 return result
             except Exception as e:
                 end_time = time.perf_counter()
                 duration = (end_time - start_time) * 1000
-                log.error(f"❌ TOOL_FAIL: {original_func.__name__} | Time: {duration:.2f} ms | Error: {e}")
+                log.error(f"[ERROR] TOOL_FAIL: {original_func.__name__} | Time: {duration:.2f} ms | Error: {e}")
                 raise e
 
         if asyncio.iscoroutinefunction(original_func):
