@@ -407,10 +407,19 @@ async def get_crop_price_quick(
             .where(
                 MarketPrice.marketplace_id == marketplace.marketplace_id,
                 or_(
+                    # Crop name matching
                     func.lower(Crop.name) == crop_name.lower(),
                     func.lower(Crop.name).contains(crop_name.lower()),
                     func.lower(Crop.name_amharic) == crop_name.lower(),
-                    func.lower(Crop.name_amharic).contains(crop_name.lower())
+                    func.lower(Crop.name_amharic).contains(crop_name.lower()),
+                    # Variety name matching (e.g. "White Teff" -> variety "White Teff (Quintal)")
+                    func.lower(CropVariety.name) == crop_name.lower(),
+                    func.lower(CropVariety.name).contains(crop_name.lower()),
+                    func.lower(CropVariety.name_amharic) == crop_name.lower(),
+                    func.lower(CropVariety.name_amharic).contains(crop_name.lower()),
+                    # Reverse contains: query "white teff" contains crop name "teff"
+                    func.strpos(literal(crop_name.lower()), func.lower(Crop.name)) > 0,
+                    func.strpos(literal(crop_name.lower()), func.lower(Crop.name_amharic)) > 0,
                 ),
                 MarketPrice.price_date >= (func.current_date() - 364),
                 Crop.category == "agricultural"
@@ -472,8 +481,9 @@ async def smart_crop_price_query(
     if not crop_name: return "Please specify the crop name."
     if not location: return "Please specify the location."
     
-    # 1. Initial Lookup
-    result = await get_crop_price_quick(ctx, crop_name, location)
+    # 1. Initial Lookup (Try cleaner location first - remove region)
+    clean_location = location.split(',')[0].strip()
+    result = await get_crop_price_quick(ctx, crop_name, clean_location)
     
     # 2. Smart Fallback (Proximity/No Data)
     no_data_found = "No price data found" in result or "Marketplace" in result and "not found" in result

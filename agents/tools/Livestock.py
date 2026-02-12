@@ -2,7 +2,7 @@ from pydantic_ai import RunContext
 from app.models.market import Livestock, LivestockBreed, MarketPrice, Marketplace
 from agents.deps import FarmerContext
 from app.database import async_session_maker
-from sqlalchemy import func, select, or_
+from sqlalchemy import func, select, or_, literal
 from typing import List, Optional, Tuple
 from sqlalchemy.orm import joinedload
 from helpers.utils import get_logger
@@ -349,7 +349,11 @@ async def get_livestock_price_quick(
                 MarketPrice.marketplace_id == marketplace.marketplace_id,
                 or_(
                     func.lower(Livestock.name) == livestock_type.lower(),
-                    func.lower(Livestock.name_amharic) == livestock_type.lower()
+                    func.lower(Livestock.name).contains(livestock_type.lower()),
+                    func.lower(Livestock.name_amharic) == livestock_type.lower(),
+                    func.lower(Livestock.name_amharic).contains(livestock_type.lower()),
+                    # Reverse: query "goat" is contained in DB "male adult goat"
+                    func.strpos(func.lower(Livestock.name), literal(livestock_type.lower())) > 0,
                 ),
                 MarketPrice.price_date >= (func.current_date() - 364)
             )
@@ -398,8 +402,9 @@ async def smart_livestock_price_query(
     if not livestock_type: return "Please specify the livestock type."
     if not location: return "Please specify the location."
 
-    # 1. Initial Lookup
-    result = await get_livestock_price_quick(ctx, livestock_type, location)
+    # 1. Initial Lookup (Try cleaner location first - remove region)
+    clean_location = location.split(',')[0].strip()
+    result = await get_livestock_price_quick(ctx, livestock_type, clean_location)
     
     # 2. Smart Fallback
     no_data_found = "No price data found" in result or "Marketplace" in result and "not found" in result

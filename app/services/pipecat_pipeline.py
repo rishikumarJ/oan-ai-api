@@ -142,6 +142,11 @@ def get_domain_phrases(lang_code: str = "en-US") -> list[str]:
         else:
             phrases.add(f"{name} Market")
             phrases.add(f"{name} Gebeya") # Even in English mode, local term helps
+            # CRITICAL: Add "In [Market]" to prevent misrecognition (e.g. "In Amber" → "Remember")
+            phrases.add(f"In {name}")
+            phrases.add(f"in {name}")
+            # Add "price in [Market]" for common query patterns
+            phrases.add(f"price in {name}")
 
     # 2. Commodities (Crops) - CRITICAL for preventing "whitefish" vs "white teff" errors
     phrases.update(COMMODITIES.keys())
@@ -463,6 +468,11 @@ class AgriNetLLMService(FrameProcessor):
         self._text_buffer = ""
         self._response_task = None
         self._websocket = websocket  # Direct websocket access for sending responses
+        self._pending_query = None  # Stores processing query for restoration on interrupt
+        self._last_processed_query = None # Stickiness for completed turns
+        self._last_processed_time = 0
+        self._speech_ended = False  # Tracks if user stopped speaking (for text-driven processing)
+        self._last_interim_time = 0  # Timestamp of last interim STT frame (proves STT still processing)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # Handle control frames - call super AND push to next processor
@@ -478,7 +488,18 @@ class AgriNetLLMService(FrameProcessor):
         
         # 1. Speech Start: Propagate it! (Verification)
         if isinstance(frame, UserStartedSpeakingFrame):
+             self._speech_ended = False  # User is speaking again
+             
+             # Cancel any pending grace/idle timers
+             if hasattr(self, '_text_idle_task') and self._text_idle_task:
+                 self._text_idle_task.cancel()
+             
              if self._response_task and not self._response_task.done():
+                 # FIX: Restore pending query for "split sentence" issues (e.g. "What is wheat..." -> wait -> "...in Amber")
+                 if self._pending_query:
+                     logger.info(f"[RESTORE] User interrupted processing. Restoring pending query: '{self._pending_query}'")
+                     self._text_buffer = self._pending_query
+
                  try:
                      self._response_task.cancel()
                      logger.info("[STOP] Previous Response Task Cancelled (Interruption)")
@@ -506,7 +527,8 @@ class AgriNetLLMService(FrameProcessor):
         elif isinstance(frame, TextFrame):
              # CRITICAL: Ignore Interim frames to avoid duplication
              if isinstance(frame, InterimTranscriptionFrame):
-                 # logger.debug(f"Skipping Interim: {frame.text}")
+                 # Track that STT is still actively processing
+                 self._last_interim_time = time.perf_counter()
                  return
 
              # Set ASR End timestamp (Last text arrival determines end of transcription latency)
@@ -517,47 +539,93 @@ class AgriNetLLMService(FrameProcessor):
                  self._text_buffer += " " + frame.text
              else:
                  self._text_buffer = frame.text
+             
+             # Send AUTHORITATIVE FINAL TRANSCRIPT (Accumulated)
+             # This ensures UI sees 'What is' + 'In Amber' as a single context
+             try:
+                 asyncio.create_task(self._websocket.send_json({
+                     "type": "transcription",
+                     "text": self._text_buffer,
+                     "role": "user",
+                     "is_final": True
+                 }))
+             except Exception: pass
+
              logger.critical(f"[INFO] AgriNet TEXT BUFF: '{self._text_buffer}'")
              
-             # --- FALLBACK: Text Idle Timer ---
-             # If VAD fails to detect stop (constant background noise), 
-             # we trigger generation if no new text arrives for X seconds.
-             if self._response_task and not self._response_task.done():
-                 # Already generating? Ignore. (Or maybe cancel? No, let it finish)
-                 pass
+             # --- TRIGGER: Process text if speech has ended ---
+             # KEY INSIGHT: Azure STT finalizes 1.5-2.3s AFTER speech stops.
+             # So we trigger processing from TEXT ARRIVAL, not from speech stop.
+             # If speech has ended AND we have text, start the grace timer.
+             if self._speech_ended:
+                 if self._response_task and not self._response_task.done():
+                     # Already processing — don't start another
+                     pass
+                 else:
+                     # Cancel any existing grace timer (new text resets it)
+                     if hasattr(self, '_text_idle_task') and self._text_idle_task:
+                         self._text_idle_task.cancel()
+                     
+                     async def _post_text_trigger():
+                         try:
+                             await asyncio.sleep(0.6)  # Grace: wait for more STT frames
+                             if self._response_task and not self._response_task.done():
+                                 return
+                             logger.info("[TRIGGER] Text arrived after speech stop — starting generation")
+                             self._response_task = asyncio.create_task(self._wait_and_generate(direction))
+                         except asyncio.CancelledError:
+                             pass
+                     
+                     self._text_idle_task = asyncio.create_task(_post_text_trigger())
              else:
-                 # Cancel existing timer
+                 # Speech still ongoing — just reset idle fallback timer
                  if hasattr(self, '_text_idle_task') and self._text_idle_task:
                      self._text_idle_task.cancel()
                  
-                 # Start new timer (e.g., 2.5s - slightly longer than VAD stop)
                  async def _idle_trigger():
                      try:
                          await asyncio.sleep(2.5) 
                          logger.warning("[TIMER] Text Idle Timer Triggered (VAD didn't stop)")
-                         # Simulate Speech Stop
                          self.metrics['speech_stopped'] = time.perf_counter() 
-                         self._response_task = asyncio.create_task(self._wait_and_generate(direction))
+                         if self._response_task and not self._response_task.done():
+                             logger.info("[GUARD] Idle timer: task already running, skipping.")
+                         else:
+                             self._response_task = asyncio.create_task(self._wait_and_generate(direction))
                      except asyncio.CancelledError:
                          pass
                  
                  self._text_idle_task = asyncio.create_task(_idle_trigger())
 
-        # 3. Speech Stop: Wait for latency, then Trigger Generation
+        # 3. Speech Stop: Mark speech ended — processing waits for actual text arrival
         elif isinstance(frame, UserStoppedSpeakingFrame):
              logger.info("[STOP] AgriNet: UserStoppedSpeakingFrame Received")
+             self._speech_ended = True
              
-             # Cancel fallback timer if it exists
+             # Cancel fallback idle timer (text-driven trigger takes over)
              if hasattr(self, '_text_idle_task') and self._text_idle_task:
                  self._text_idle_task.cancel()
 
              self.metrics['speech_stopped'] = time.perf_counter()
              
-             # Start background task to wait and generate
-             self._response_task = asyncio.create_task(self._wait_and_generate(direction))
-         
-        # 4. Speech Start: Cancel any pending tasks
+             # If buffer already has text (STT arrived before VAD stop), trigger processing now
+             if self._text_buffer.strip():
+                 if self._response_task and not self._response_task.done():
+                     logger.info("[GUARD] AgriNet: Task already running, skipping")
+                 else:
+                     async def _post_stop_trigger():
+                         try:
+                             await asyncio.sleep(0.6)  # Brief grace for late frames
+                             if self._response_task and not self._response_task.done():
+                                 return
+                             logger.info("[TRIGGER] Buffer had text when speech stopped — starting generation")
+                             self._response_task = asyncio.create_task(self._wait_and_generate(direction))
+                         except asyncio.CancelledError:
+                             pass
+                     self._text_idle_task = asyncio.create_task(_post_stop_trigger())
+          
+        # 4. Speech Start: Cancel any pending tasks, restore buffer if needed
         elif isinstance(frame, UserStartedSpeakingFrame):
+             self._speech_ended = False  # User is speaking again
              if hasattr(self, '_text_idle_task') and self._text_idle_task:
                  self._text_idle_task.cancel()
              await super().process_frame(frame, direction)
@@ -571,15 +639,33 @@ class AgriNetLLMService(FrameProcessor):
     async def _wait_and_generate(self, direction):
         """Wait for late STT frames, then generate."""
         try:
+            # IMMEDIATELY save buffer for restoration on interrupt
+            # This MUST happen before the grace sleep, because UserStartedSpeakingFrame
+            # can fire during the sleep and needs _pending_query to be set.
+            self._pending_query = self._text_buffer
+            
             # Capture Buffer Wait Time
             self.metrics['buffer_start'] = time.perf_counter()
             
-            # Wait 2.0s for Cloud STT latency (User requested 2.0s)
-            logger.info("[WAIT] AgriNet: Waiting 2.0s for final text...")
-            await asyncio.sleep(2.0)
+            # Wait 0.6s for "Grace Period" (Allows user to resume after short pause)
+            logger.info("[WAIT] AgriNet: Waiting 0.6s grace period...")
+            await asyncio.sleep(0.6)
+            
+            # SMART WAIT: If Azure STT is still processing (interim frames arriving),
+            # wait until it finalizes. Azure STT can take 1.5-2.3s after speech stops.
+            wait_start = time.perf_counter()
+            while (time.perf_counter() - self._last_interim_time) < 1.5:
+                # STT had an interim frame recently — it's still processing
+                if (time.perf_counter() - wait_start) > 4.0:
+                    logger.warning("[WAIT] Max STT wait exceeded (4s). Proceeding anyway.")
+                    break
+                logger.info("[WAIT] STT still processing (interim frames active). Waiting 300ms...")
+                await asyncio.sleep(0.3)
             
             self.metrics['buffer_end'] = time.perf_counter()
             
+            # Re-snapshot: buffer may have grown during grace (late STT frames)
+            self._pending_query = self._text_buffer
             user_text = self._text_buffer.strip()
             
             # --- FILTER: Ignore Empty or Garbage Queries ---
@@ -591,8 +677,34 @@ class AgriNetLLMService(FrameProcessor):
                 logger.warning(f"[WARN] AgriNet: Query too short ('{user_text}'). Likely noise/hallucination. Ignoring.")
                 return
 
-            # Clear buffer immediately after picking it up to avoid re-processing
+            # Signal UI: PROCESSING STARTED (Show Loader)
+            try:
+                 asyncio.create_task(self._websocket.send_json({
+                     "type": "status",
+                     "status": "processing"
+                 }))
+            except Exception: pass
+
+            # Clear buffer to lock this query
             self._text_buffer = ""
+
+            # NEW: Merge Logic for Completed Turns (e.g. Turn 1 finished quickly, user speaks Turn 2)
+            now_t = time.perf_counter()
+            if self._last_processed_query and self._last_processed_time > 0:
+                delta = now_t - self._last_processed_time
+                # 3.0s window: covers typical "pause -> answer -> resume" cycle
+                if delta < 3.0:
+                    logger.critical(f"[MERGE] Rapid turn detected ({delta:.2f}s). Stitching: '{self._last_processed_query} {user_text}'")
+                    user_text = f"{self._last_processed_query} {user_text}"
+                    # Update UI with the stitched transcription
+                    try:
+                        asyncio.create_task(self._websocket.send_json({
+                            "type": "transcription",
+                            "text": user_text,
+                            "role": "user",
+                            "is_final": True
+                        }))
+                    except Exception: pass
 
             logger.info(f"[START] AgriNet: Proceeding with query: '{user_text}'")
             
@@ -742,6 +854,10 @@ class AgriNetLLMService(FrameProcessor):
                 "turn_id": str(uuid.uuid4())
             })
             
+            # Update Stitching State
+            self._last_processed_query = user_text
+            self._last_processed_time = time.perf_counter()
+            
             # Try to push end frame for TTS
             try:
                 await self.push_frame(LLMFullResponseEndFrame())
@@ -754,6 +870,8 @@ class AgriNetLLMService(FrameProcessor):
             logger.error(f"LLM Error: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            self._pending_query = None
 
 class RawFastAPIWebsocketInputTransport(BaseInputTransport):
     def __init__(self, websocket: WebSocket, params):
@@ -882,6 +1000,19 @@ class TranscriptionNotifier(FrameProcessor):
     def __init__(self, websocket):
         super().__init__()
         self._websocket = websocket
+        self._transcript_buffer = ""
+
+    async def _send_transcription(self, text, is_final):
+        if text:
+             try:
+                 await self._websocket.send_json({
+                     "type": "transcription",
+                     "text": text,
+                     "role": "user",
+                     "is_final": is_final
+                 })
+             except Exception as e:
+                 logger.error(f"Failed to send transcription: {e}")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # Handle control frames - call super AND push to next processor
@@ -890,31 +1021,29 @@ class TranscriptionNotifier(FrameProcessor):
             await self.push_frame(frame, direction)  # Also push to next processor!
             return
         
-        # For all other frames, explicitly push to next processor
-        await self.push_frame(frame, direction)
-        
-        text_content = ""
-        is_final = False
-        
-        if isinstance(frame, TextFrame):
-            text_content = frame.text
-            is_final = True
-            logger.info(f"🔔 Final Transcript: {text_content}")
+        # Reset buffer on new speech turn
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._transcript_buffer = ""
+            await self.push_frame(frame, direction)
+            return
+
+        # Handle Transcriptions - SEND ALL AS INTERIM (is_final=False)
+        # We rely on AgriNetLLMService to send the authoritative 'Final' (Accumulated) transcript.
+        if isinstance(frame, InterimTranscriptionFrame):
+            text = (self._transcript_buffer + " " + frame.text).strip()
+            await self._send_transcription(text, is_final=False)
             
         elif isinstance(frame, TranscriptionFrame):
-            text_content = frame.text
-            is_final = False 
+            self._transcript_buffer = (self._transcript_buffer + " " + frame.text).strip()
+            await self._send_transcription(self._transcript_buffer, is_final=False)
             
-        if text_content:
-             try:
-                 await self._websocket.send_json({
-                     "type": "transcription",
-                     "text": text_content,
-                     "role": "user",
-                     "is_final": is_final
-                 })
-             except Exception as e:
-                 logger.error(f"Failed to send transcription: {e}")
+        elif isinstance(frame, TextFrame):
+            if not isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+                 self._transcript_buffer = (self._transcript_buffer + " " + frame.text).strip()
+                 await self._send_transcription(self._transcript_buffer, is_final=False)
+
+        # Explicitly push to next processor
+        await self.push_frame(frame, direction)
 
 class RawFastAPIWebsocketTransport(BaseTransport):
     def __init__(self, websocket: WebSocket, params: TransportParams):
@@ -936,7 +1065,7 @@ async def run_pipecat_pipeline(websocket: WebSocket, session_id: str, lang: str 
     # CLEAN INPUT MODE - Relies on DeepFilterNet/RNNoise to remove noise first
     vad_analyzer = SileroVADAnalyzer(params=VADParams(
         start_secs=0.1,       # Fast pickup (100ms) - Catches first syllables ("Hello")
-        stop_secs=0.8,        # Standard release (800ms) - Natural pauses
+        stop_secs=0.8,        # Standard release (800ms) - Fast, natural pauses
         confidence=0.6,       # Standard confidence (0.6) - Reliable for clean audio
         min_volume=0.1        # Low volume threshold (10%) - Captures soft speech (DeepFilter handles the noise)
     ))
