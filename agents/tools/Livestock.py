@@ -212,6 +212,8 @@ async def get_livestock_price_in_marketplace(
                         parts.append(f"Type: {var['productionType']}")
                     if var.get("location"):
                         parts.append(f"From: {var['location']}")
+                    if var.get("collectedDate"):
+                        parts.append(f" As of Date: {var['collectedDate']}")
 
                     price_range = ""
                     if var.get("pmin") and var.get("pmax"):
@@ -233,7 +235,7 @@ async def get_livestock_price_in_marketplace(
                     f"* Breed: {price_row.breed_name or 'N/A'}" +
                     (f" ({price_row.breed_name_amharic})" if price_row.breed_name_amharic else "") + "\n"
                     f"{variations_info}\n"
-                    f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}"
+                    # f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}"
                     f"* Source: https://nmis.et/"
                 )
             else:
@@ -336,6 +338,8 @@ async def compare_livestock_prices_nearby(
                         parts.append(f"Grade: {var['grade']}")
                     if var.get("productionType"):
                         parts.append(f"Type: {var['productionType']}")
+                    if var.get("collectedDate"):
+                        parts.append(f" As of Date: {var['collectedDate']}")
 
                     price_range = ""
                     if var.get("pmin") and var.get("pmax"):
@@ -355,7 +359,6 @@ async def compare_livestock_prices_nearby(
                 lines.append(
                     f"{idx}. **{market.name}** ({market.region})\n"
                     f"{variations_info}\n"
-                    f"   * As of Date: {market.price_date.strftime('%Y-%m-%d')}"
                     f"   * Source: https://nmis.et/"
                 )
             else:
@@ -557,6 +560,8 @@ async def get_livestock_price_quick(
                         parts.append(f"Type: {var['productionType']}")
                     if var.get("location"):
                         parts.append(f"From: {var['location']}")
+                    if var.get("collectedDate"):
+                        parts.append(f" As of Date: {var['collectedDate']}")
 
                     price_range = ""
                     if var.get("pmin") and var.get("pmax"):
@@ -578,7 +583,6 @@ async def get_livestock_price_quick(
                     f"* Breed: {price_row.breed_name or 'N/A'}" +
                     (f" ({price_row.breed_name_amharic})" if price_row.breed_name_amharic else "") + "\n"
                     f"{variations_info}\n"
-                    f"* As of Date: {price_row.price_date.strftime('%Y-%m-%d')}\n"
                     f"* Source: https://nmis.et/"
                 )
             else:
